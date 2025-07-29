@@ -18,25 +18,21 @@ class ScreenMarquee(QtWidgets.QWidget):
             QtCore.Qt.WindowDoesNotAcceptFocus  # Prevent focus issues
         )
         
-        # Get the screen under the cursor for the marquee
+        # Store the screen reference for later use
         cursor_pos = QtGui.QCursor.pos()
-        screen = QtWidgets.QApplication.screenAt(cursor_pos)
-        if screen:
-            screen_rect = screen.geometry()
+        self.target_screen = QtWidgets.QApplication.screenAt(cursor_pos)
+        if not self.target_screen:
+            self.target_screen = QtWidgets.QApplication.primaryScreen()
+        
+        if self.target_screen:
+            screen_rect = self.target_screen.geometry()
             # Ensure we're positioning relative to the screen, not any parent
             self.setGeometry(screen_rect.x(), screen_rect.y(), screen_rect.width(), screen_rect.height())
             log.debug(f"Marquee positioned at: {screen_rect.x()}, {screen_rect.y()}, {screen_rect.width()}x{screen_rect.height()}")
         else:
-            # Fallback to primary screen
-            screen = QtWidgets.QApplication.primaryScreen()
-            if screen:
-                screen_rect = screen.geometry()
-                self.setGeometry(screen_rect.x(), screen_rect.y(), screen_rect.width(), screen_rect.height())
-                log.debug(f"Marquee positioned at (fallback): {screen_rect.x()}, {screen_rect.y()}, {screen_rect.width()}x{screen_rect.height()}")
-            else:
-                # Final fallback
-                self.setGeometry(0, 0, 1920, 1080)
-                log.debug("Marquee positioned at (final fallback): 0, 0, 1920x1080")
+            # Final fallback
+            self.setGeometry(0, 0, 1920, 1080)
+            log.debug("Marquee positioned at (final fallback): 0, 0, 1920x1080")
         
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setCursor(QtCore.Qt.CrossCursor)
@@ -136,9 +132,17 @@ class ScreenMarquee(QtWidgets.QWidget):
         if not marquee.selection_rect or marquee.selection_rect.isNull():
             return None
         
-        # Grab screenshot
-        screenshot = screen.grabWindow(0)
-        cropped = screenshot.copy(marquee.selection_rect)
+        # Grab screenshot using the correct screen
+        # Get the screen where the marquee was positioned
+        marquee_screen = getattr(marquee, 'target_screen', None)
+        if not marquee_screen:
+            marquee_screen = QtWidgets.QApplication.screenAt(QtGui.QCursor.pos())
+        if not marquee_screen:
+            marquee_screen = QtWidgets.QApplication.primaryScreen()
+        
+        # Take screenshot using screen-specific coordinates
+        cropped = marquee_screen.grabWindow(0, marquee.selection_rect.x(), marquee.selection_rect.y(), 
+                                           marquee.selection_rect.width(), marquee.selection_rect.height())
         tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
         cropped.save(tmpfile.name, "PNG")
         return tmpfile.name 

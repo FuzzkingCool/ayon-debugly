@@ -14,6 +14,9 @@ class AttachmentListWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QtWidgets.QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)  # Remove margins to prevent layout issues
+        self.layout.setSpacing(0)
+        
         self.list_widget = QtWidgets.QListWidget(self)
         self.layout.addWidget(self.list_widget)
         self.attachments = []
@@ -26,6 +29,12 @@ class AttachmentListWidget(QtWidgets.QWidget):
         self.list_widget.setSpacing(2)
         self.list_widget.setResizeMode(QtWidgets.QListView.Adjust)
         self.list_widget.setMovement(QtWidgets.QListView.Static)
+        
+        # Set size policy to allow proper expansion
+        self.list_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding
+        )
         
         # Apply consistent styling
         self.list_widget.setStyleSheet("""
@@ -41,6 +50,7 @@ class AttachmentListWidget(QtWidgets.QWidget):
                 padding: 6px;
                 border-radius: 3px;
                 margin: 1px 0px;
+                min-height: 24px;  /* Ensure consistent item height */
             }
             QListWidget::item:hover {
                 background-color: #3D3D3D;

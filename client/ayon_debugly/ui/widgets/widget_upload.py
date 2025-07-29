@@ -10,12 +10,12 @@ class UploadWidget(QtWidgets.QFrame):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setFrameStyle(QtWidgets.QFrame.StyledPanel | QtWidgets.QFrame.Raised)
+        self.setMinimumHeight(120)  # Minimum height, can grow naturally
         self.setStyleSheet("""
             QFrame {
                 border: 2px dashed #666666;
                 border-radius: 6px;
                 background: #2D2D2D;
-                min-height: 80px;
                 padding: 12px;
             }
             QFrame:hover {
@@ -29,15 +29,18 @@ class UploadWidget(QtWidgets.QFrame):
                 background: transparent;
             }
         """)
-        self.label = QtWidgets.QLabel("📁 Drag and drop files here to attach\nor click Browse Files below", self)
+        
+        # Simple single label approach
+        self.label = QtWidgets.QLabel("📁 Drag and drop files here to attach", self)
         self.label.setAlignment(QtCore.Qt.AlignCenter)
+        
+        # Simple layout
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(0)
         layout.addWidget(self.label)
         
-        # Ensure the widget expands to fill its container
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        # Let the widget grow naturally
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():

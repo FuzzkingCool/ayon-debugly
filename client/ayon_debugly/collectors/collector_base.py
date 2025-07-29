@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import os
 import json
 
-REDACT_KEYS = ["password", "token", "secret", "key", "auth", "session", "cookie"]
+REDACT_KEYS = ["password", "token", "secret", "key", "auth", "session", "cookie", "kitsu_pwd"]
 
 def redact_dict(d):
     result = {}

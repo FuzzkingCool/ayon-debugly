@@ -14,28 +14,28 @@ class ScreenshotCarousel(QtWidgets.QWidget):
     def setup_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(8)
         
-        # Screenshot display area
-        self.screenshot_label = QtWidgets.QLabel("No screenshots")
-        self.screenshot_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.screenshot_label.setMinimumHeight(120)
-        self.screenshot_label.setMaximumHeight(120)
-        self.screenshot_label.setStyleSheet("""
+        # Main carousel area with thumbnails
+        carousel_layout = QtWidgets.QHBoxLayout()
+        carousel_layout.setContentsMargins(0, 0, 0, 0)
+        carousel_layout.setSpacing(8)
+        
+        # Previous thumbnail (smaller and faded)
+        self.prev_thumbnail = QtWidgets.QLabel()
+        self.prev_thumbnail.setFixedSize(80, 60)
+        self.prev_thumbnail.setAlignment(QtCore.Qt.AlignCenter)
+        self.prev_thumbnail.setStyleSheet("""
             QLabel {
-                border: 1px dashed #666666;
-                background: #2D2D2D;
-                color: #E0E0E0;
+                border: 1px solid #444444;
+                background: #1D1D1D;
                 border-radius: 4px;
+                color: #888888;
             }
         """)
-        layout.addWidget(self.screenshot_label)
+        self.prev_thumbnail.setText("")
         
-        # Navigation controls
-        nav_layout = QtWidgets.QHBoxLayout()
-        nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(4)
-        
+        # Previous button
         self.prev_btn = QtWidgets.QPushButton("◀")
         self.prev_btn.setFixedSize(24, 24)
         self.prev_btn.setStyleSheet("""
@@ -56,10 +56,20 @@ class ScreenshotCarousel(QtWidgets.QWidget):
         """)
         self.prev_btn.clicked.connect(self.previous_screenshot)
         
-        self.info_label = QtWidgets.QLabel("0/0")
-        self.info_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.info_label.setStyleSheet("color: #888888; font-size: 10px;")
+        # Current screenshot (main display)
+        self.current_thumbnail = QtWidgets.QLabel("No screenshots")
+        self.current_thumbnail.setFixedSize(200, 120)
+        self.current_thumbnail.setAlignment(QtCore.Qt.AlignCenter)
+        self.current_thumbnail.setStyleSheet("""
+            QLabel {
+                border: 2px solid #666666;
+                background: #2D2D2D;
+                color: #E0E0E0;
+                border-radius: 4px;
+            }
+        """)
         
+        # Next button
         self.next_btn = QtWidgets.QPushButton("▶")
         self.next_btn.setFixedSize(24, 24)
         self.next_btn.setStyleSheet("""
@@ -80,22 +90,51 @@ class ScreenshotCarousel(QtWidgets.QWidget):
         """)
         self.next_btn.clicked.connect(self.next_screenshot)
         
-        nav_layout.addWidget(self.prev_btn)
-        nav_layout.addWidget(self.info_label, 1)
-        nav_layout.addWidget(self.next_btn)
+        # Next thumbnail (smaller and faded)
+        self.next_thumbnail = QtWidgets.QLabel()
+        self.next_thumbnail.setFixedSize(80, 60)
+        self.next_thumbnail.setAlignment(QtCore.Qt.AlignCenter)
+        self.next_thumbnail.setStyleSheet("""
+            QLabel {
+                border: 1px solid #444444;
+                background: #1D1D1D;
+                border-radius: 4px;
+                color: #888888;
+            }
+        """)
+        self.next_thumbnail.setText("")
         
-        layout.addLayout(nav_layout)
+        # Add widgets to carousel layout
+        carousel_layout.addWidget(self.prev_thumbnail)
+        carousel_layout.addWidget(self.prev_btn)
+        carousel_layout.addWidget(self.current_thumbnail, 1)  # Give it stretch
+        carousel_layout.addWidget(self.next_btn)
+        carousel_layout.addWidget(self.next_thumbnail)
+        
+        layout.addLayout(carousel_layout)
+        
+        # Filename display (centered)
+        self.filename_label = QtWidgets.QLabel("")
+        self.filename_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.filename_label.setStyleSheet("""
+            QLabel {
+                color: #888888;
+                font-size: 10px;
+                padding: 2px;
+            }
+        """)
+        layout.addWidget(self.filename_label)
         
         # Double-click to open
-        self.screenshot_label.mouseDoubleClickEvent = self.open_current_screenshot
+        self.current_thumbnail.mouseDoubleClickEvent = self.open_current_screenshot
         
     def add_screenshot(self, file_path):
         """Add a screenshot to the carousel"""
         if file_path not in self.screenshots:
             self.screenshots.append(file_path)
-            if len(self.screenshots) == 1:
-                self.current_index = 0
-                self.update_display()
+            # Select the latest screenshot
+            self.current_index = len(self.screenshots) - 1
+            self.update_display()
             self.update_navigation()
             
     def remove_screenshot(self, file_path):
@@ -116,12 +155,16 @@ class ScreenshotCarousel(QtWidgets.QWidget):
             self.update_navigation()
             
     def update_display(self):
-        """Update the current screenshot display"""
+        """Update the current screenshot display with side thumbnails"""
         if not self.screenshots:
-            self.screenshot_label.setText("No screenshots")
-            self.screenshot_label.setPixmap(QtGui.QPixmap())
+            self.current_thumbnail.setText("No screenshots")
+            self.current_thumbnail.setPixmap(QtGui.QPixmap())
+            self.prev_thumbnail.setPixmap(QtGui.QPixmap())
+            self.next_thumbnail.setPixmap(QtGui.QPixmap())
+            self.filename_label.setText("")
             return
             
+        # Update current thumbnail
         current_path = self.screenshots[self.current_index]
         if os.path.exists(current_path):
             pixmap = QtGui.QPixmap(current_path)
@@ -131,22 +174,80 @@ class ScreenshotCarousel(QtWidgets.QWidget):
                     QtCore.Qt.KeepAspectRatio, 
                     QtCore.Qt.SmoothTransformation
                 )
-                self.screenshot_label.setPixmap(scaled_pixmap)
-                self.screenshot_label.setText("")
+                self.current_thumbnail.setPixmap(scaled_pixmap)
+                self.current_thumbnail.setText("")
+                
+                # Update filename
+                filename = os.path.basename(current_path)
+                self.filename_label.setText(filename)
             else:
-                self.screenshot_label.setText("Invalid image")
+                self.current_thumbnail.setText("Invalid image")
+                self.filename_label.setText("")
         else:
-            self.screenshot_label.setText("File not found")
+            self.current_thumbnail.setText("File not found")
+            self.filename_label.setText("")
+            
+        # Update previous thumbnail
+        if self.current_index > 0:
+            prev_path = self.screenshots[self.current_index - 1]
+            if os.path.exists(prev_path):
+                pixmap = QtGui.QPixmap(prev_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(
+                        80, 60, 
+                        QtCore.Qt.KeepAspectRatio, 
+                        QtCore.Qt.SmoothTransformation
+                    )
+                    # Create faded version
+                    faded_pixmap = QtGui.QPixmap(scaled_pixmap.size())
+                    faded_pixmap.fill(QtCore.Qt.transparent)
+                    painter = QtGui.QPainter(faded_pixmap)
+                    painter.setOpacity(0.4)  # Fade to 40% opacity
+                    painter.drawPixmap(0, 0, scaled_pixmap)
+                    painter.end()
+                    self.prev_thumbnail.setPixmap(faded_pixmap)
+                    self.prev_thumbnail.setText("")
+                else:
+                    self.prev_thumbnail.setText("")
+            else:
+                self.prev_thumbnail.setText("")
+        else:
+            self.prev_thumbnail.setText("")
+            
+        # Update next thumbnail
+        if self.current_index < len(self.screenshots) - 1:
+            next_path = self.screenshots[self.current_index + 1]
+            if os.path.exists(next_path):
+                pixmap = QtGui.QPixmap(next_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(
+                        80, 60, 
+                        QtCore.Qt.KeepAspectRatio, 
+                        QtCore.Qt.SmoothTransformation
+                    )
+                    # Create faded version
+                    faded_pixmap = QtGui.QPixmap(scaled_pixmap.size())
+                    faded_pixmap.fill(QtCore.Qt.transparent)
+                    painter = QtGui.QPainter(faded_pixmap)
+                    painter.setOpacity(0.4)  # Fade to 40% opacity
+                    painter.drawPixmap(0, 0, scaled_pixmap)
+                    painter.end()
+                    self.next_thumbnail.setPixmap(faded_pixmap)
+                    self.next_thumbnail.setText("")
+                else:
+                    self.next_thumbnail.setText("")
+            else:
+                self.next_thumbnail.setText("")
+        else:
+            self.next_thumbnail.setText("")
             
     def update_navigation(self):
-        """Update navigation buttons and info"""
+        """Update navigation buttons"""
         count = len(self.screenshots)
         if count == 0:
-            self.info_label.setText("0/0")
             self.prev_btn.setEnabled(False)
             self.next_btn.setEnabled(False)
         else:
-            self.info_label.setText(f"{self.current_index + 1}/{count}")
             self.prev_btn.setEnabled(self.current_index > 0)
             self.next_btn.setEnabled(self.current_index < count - 1)
             

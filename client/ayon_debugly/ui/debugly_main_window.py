@@ -1,18 +1,14 @@
 import getpass
+import json
 import os
 import tempfile
 import traceback
-import json
 
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtGui import QFont
 
+from ayon_debugly.collectors import get_collector_pairs
 from ayon_debugly.collectors.collector_logs import CollectorLogs
-from ayon_debugly.collectors.collector_env import CollectorEnv
-from ayon_debugly.collectors.collector_os import CollectorOS
-from ayon_debugly.collectors.collector_system_spec import CollectorSystemSpec
-from ayon_debugly.collectors.collector_user import CollectorUser
-from ayon_debugly.collectors.collector_production_apps import CollectorProductionApps
 from ayon_debugly.debugly_app import DebuglyApp
 from ayon_debugly.debugly_issue import DebuglyIssue
 from ayon_debugly.logger import log
@@ -48,7 +44,6 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.form_model = IssueFormModel()
         self.app = DebuglyApp()
         self.collected_metadata = {}
-        self._setup_collectors()
         self.submitButton.clicked.connect(self.submit_report)
         self.apply_material_theme()
         self.attachment_widget.attachmentRemoved.connect(
@@ -73,6 +68,13 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.screenshot_carousel.add_screenshot = lambda path: None
         if not hasattr(self.screenshot_carousel, 'remove_screenshot'):
             self.screenshot_carousel.remove_screenshot = lambda path: None
+        
+        # Initialize accordion with screenshots open by default
+        self._initialize_accordion()
+        
+        # Setup collectors in background after UI is shown
+        QtCore.QTimer.singleShot(100, self._setup_collectors_async)
+        
         log.info("DebuglyMainWindow initialized")
 
     def setup_ui(self):
@@ -151,40 +153,65 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         status_layout = QtWidgets.QHBoxLayout(status_container)
         status_layout.setContentsMargins(8, 4, 8, 4)
         
-        self.statusLabel = QtWidgets.QLabel("Ready")
+        self.statusLabel = QtWidgets.QLabel("Initializing...")
         status_layout.addWidget(self.statusLabel)
         
         main_layout.addWidget(status_container)
 
-    def _setup_collectors(self):
-        """Setup and run all collectors to populate UI widgets and metadata"""
+    def _setup_collectors_async(self):
+        """Setup and run all collectors asynchronously to populate UI widgets and metadata"""
         try:
+            self.statusLabel.setText("Collecting system information...")
+            QtWidgets.QApplication.processEvents()
+            
             # Setup logs collector to populate logs widget
             self._setup_log_list()
             
             # Setup other collectors for metadata
             self._setup_metadata_collectors()
             
+            self.statusLabel.setText("Ready")
+            log.info("All collectors completed successfully")
+            
         except Exception as e:
             log.error(f"Failed to setup collectors: {e}")
             log.error(traceback.format_exc())
+            self.statusLabel.setText(f"Error collecting data: {e}")
+
+    def _setup_collectors(self):
+        """Legacy method - now calls async version"""
+        self._setup_collectors_async()
 
     def _setup_metadata_collectors(self):
         """Run all collectors except logs and combine into metadata JSON"""
-        collectors = [
-            CollectorEnv(),
-            CollectorOS(),
-            CollectorSystemSpec(),
-            CollectorUser(),
-            CollectorProductionApps(settings=getattr(self.app, 'settings', None))
+        # Get all collectors dynamically (except logs which is handled separately)
+        collector_pairs = get_collector_pairs()
+        
+        # Filter out logs collector since it's handled separately
+        metadata_collectors = [
+            (friendly_name, collector_class) 
+            for friendly_name, collector_class in collector_pairs 
+            if "Log" not in friendly_name
         ]
         
-        for collector in collectors:
+        for collector_name, collector_class in metadata_collectors:
             try:
-                collector_name = collector.__class__.__name__
+                self.statusLabel.setText(f"Collecting {collector_name.lower()}...")
+                QtWidgets.QApplication.processEvents()
+                
                 log.info(f"Running collector: {collector_name}")
+                
+                # Create collector instance with settings if needed
+                if "Production Apps" in collector_name:
+                    collector = collector_class(settings=getattr(self.app, 'settings', None))
+                else:
+                    collector = collector_class()
+                
                 data = collector.collect()
-                self.collected_metadata.update(data)
+                
+                # Use the friendly name as the section name
+                self.collected_metadata[collector_name] = data
+                
                 log.info(f"Collector {collector_name} completed successfully")
             except Exception as e:
                 log.error(f"Collector {collector_name} failed: {e}")
@@ -246,10 +273,10 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.screenshot_header.setFont(fa)
         self.screenshot_header.clicked.connect(self._toggle_screenshot_panel)
         
-        # Content panel (initially visible)
+        # Content panel (initially hidden - will be opened by _initialize_accordion)
         self.screenshot_content = QtWidgets.QWidget()
         self.screenshot_content.setObjectName("AccordionContent")
-        self.screenshot_content.setVisible(True)
+        self.screenshot_content.setVisible(False)  # Start closed, will be opened by initialization
         self.screenshot_content.setStyleSheet("background-color: #1E1E1E;")  # Match app background
         content_layout = QtWidgets.QVBoxLayout(self.screenshot_content)
         content_layout.setContentsMargins(12, 8, 12, 12)
@@ -272,22 +299,56 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Screenshot buttons below preview (smaller with icons)
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.setSpacing(8)
+        button_layout.addStretch()  # Push buttons to the right
         
         # Full Screen button with icon
         self.screenshotButton = QtWidgets.QPushButton("🖥️ Full Screen")
-        self.screenshotButton.setFixedSize(110, 28)
+        self.screenshotButton.setFixedSize(120, 28)  # Increased width to prevent text cutoff
         self.screenshotButton.setToolTip("Take a screenshot of the entire screen")
+        self.screenshotButton.setStyleSheet("""
+            QPushButton {
+                background-color: #2D2D2D;
+                border: 1px solid #666666;
+                border-radius: 4px;
+                color: #E0E0E0;
+                font-size: 11px;
+                font-weight: 500;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #3D3D3D;
+            }
+            QPushButton:pressed {
+                background-color: #1D1D1D;
+            }
+        """)
         self.screenshotButton.clicked.connect(self.take_screenshot)
         
         # Select Area button with icon
         self.captureAreaButton = QtWidgets.QPushButton("✂️ Select Area")
-        self.captureAreaButton.setFixedSize(110, 28)
+        self.captureAreaButton.setFixedSize(120, 28)  # Increased width to prevent text cutoff
         self.captureAreaButton.setToolTip("Select a specific area to screenshot")
+        self.captureAreaButton.setStyleSheet("""
+            QPushButton {
+                background-color: #2D2D2D;
+                border: 1px solid #666666;
+                border-radius: 4px;
+                color: #E0E0E0;
+                font-size: 11px;
+                font-weight: 500;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #3D3D3D;
+            }
+            QPushButton:pressed {
+                background-color: #1D1D1D;
+            }
+        """)
         self.captureAreaButton.clicked.connect(self.capture_area)
         
         button_layout.addWidget(self.screenshotButton)
         button_layout.addWidget(self.captureAreaButton)
-        button_layout.addStretch()  # Push buttons to the left
         content_layout.addLayout(button_layout)
         
         # Add widgets to accordion
@@ -308,66 +369,87 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.attachments_header = QtWidgets.QPushButton()
         self.attachments_header.setObjectName("AccordionHeader")
         self.attachments_header.setFixedHeight(32)
-        # Font Awesome paperclip icon (fa-paperclip)
         self.attachments_header.setText("📎 Attachments")
         fa = QFont(self.fontawesome_family, 11)
-        fa.setWeight(QtGui.QFont.Black)  # FontAwesome 7 requires Black weight
+        fa.setWeight(QtGui.QFont.Black)
         self.attachments_header.setFont(fa)
         self.attachments_header.clicked.connect(self._toggle_attachments_panel)
         
-        # Content panel (initially visible)
+        # Create the attachments content widget
         self.attachments_content = QtWidgets.QWidget()
         self.attachments_content.setObjectName("AccordionContent")
         self.attachments_content.setVisible(True)
-        self.attachments_content.setStyleSheet("background-color: #1E1E1E;")  # Match app background
+        self.attachments_content.setStyleSheet("background-color: #1E1E1E;")
+        
+        # Set minimum size for the entire attachments section
+        self.attachments_content.setMinimumHeight(450)  # Minimum height to prevent layout breaking
+        
         content_layout = QtWidgets.QVBoxLayout(self.attachments_content)
         content_layout.setContentsMargins(12, 8, 12, 12)
-        content_layout.setSpacing(12)  # Increased spacing between elements
+        content_layout.setSpacing(8)  # Natural spacing between elements
         
-        # Drag and drop section at top
+        # 1. Upload widget (drag & drop area)
         self.upload_widget = UploadWidget(self)
         self.upload_widget.filesDropped.connect(self.on_files_dropped)
-        self.upload_widget.setMinimumHeight(100)
-        self.upload_widget.setMaximumHeight(120)
+        self.upload_widget.setMinimumHeight(120)  # Minimum height, can grow
         content_layout.addWidget(self.upload_widget)
         
-        # Divider line
+        # 2. Divider line
         divider = QtWidgets.QFrame()
         divider.setFrameShape(QtWidgets.QFrame.HLine)
         divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        divider.setStyleSheet("QFrame { color: #666666; margin: 4px 0px; }")
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("QFrame { background-color: #666666; }")
         content_layout.addWidget(divider)
         
-        # Attached Files label
+        # 3. Attached Files label
         attachments_label = QtWidgets.QLabel("Attached Files")
         attachments_label.setAlignment(QtCore.Qt.AlignCenter)
+        attachments_label.setFixedHeight(24)
         attachments_label.setStyleSheet("""
             QLabel {
                 color: #888888;
                 font-size: 11px;
                 font-weight: 500;
                 background: transparent;
-                padding: 4px 0px;
             }
         """)
         content_layout.addWidget(attachments_label)
         
-        # Attachment list widget with proper sizing
-        self.attachment_widget.setMinimumHeight(120)
-        self.attachment_widget.setMaximumHeight(200)
+        # 4. Attachment list widget
+        self.attachment_widget.setMinimumHeight(180)  # Minimum height for 5+ lines
         content_layout.addWidget(self.attachment_widget)
         
-        # Browse button (right aligned) - moved outside the list widget
+        # 5. Browse button container
         browse_container = QtWidgets.QWidget()
+        browse_container.setStyleSheet("background-color: transparent;")
         browse_layout = QtWidgets.QHBoxLayout(browse_container)
-        browse_layout.setContentsMargins(0, 4, 0, 0)  # Add top margin
-        browse_layout.setSpacing(0)
+        browse_layout.setContentsMargins(0, 0, 0, 0)
+        browse_layout.setSpacing(8)
         browse_layout.addStretch()  # Push button to the right
+        
         self.attachmentsButton = QtWidgets.QPushButton("Browse Files")
-        self.attachmentsButton.setFixedHeight(28)
-        self.attachmentsButton.setMaximumWidth(100)
+        self.attachmentsButton.setFixedSize(110, 28)
+        self.attachmentsButton.setStyleSheet("""
+            QPushButton {
+                background-color: #2D2D2D;
+                border: 1px solid #666666;
+                border-radius: 4px;
+                color: #E0E0E0;
+                font-size: 11px;
+                font-weight: 500;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #3D3D3D;
+            }
+            QPushButton:pressed {
+                background-color: #1D1D1D;
+            }
+        """)
         self.attachmentsButton.clicked.connect(self.open_attachments)
         browse_layout.addWidget(self.attachmentsButton)
+        
         content_layout.addWidget(browse_container)
         
         # Add widgets to accordion
@@ -494,12 +576,15 @@ class DebuglyMainWindow(QtWidgets.QWidget):
     def _toggle_screenshot_panel(self):
         """Toggle the visibility of the screenshot panel"""
         is_visible = self.screenshot_content.isVisible()
-        self.screenshot_content.setVisible(not is_visible)
         
-        # Update header appearance based on state
         if not is_visible:
+            # Opening this panel - close all others first
+            self._close_all_other_panels('screenshots')
+            self.screenshot_content.setVisible(True)
             self.screenshot_header.setObjectName("AccordionHeaderExpanded")
         else:
+            # Closing this panel
+            self.screenshot_content.setVisible(False)
             self.screenshot_header.setObjectName("AccordionHeader")
         
         # Force style update
@@ -514,12 +599,15 @@ class DebuglyMainWindow(QtWidgets.QWidget):
     def _toggle_attachments_panel(self):
         """Toggle the visibility of the attachments panel"""
         is_visible = self.attachments_content.isVisible()
-        self.attachments_content.setVisible(not is_visible)
         
-        # Update header appearance based on state
         if not is_visible:
+            # Opening this panel - close all others first
+            self._close_all_other_panels('attachments')
+            self.attachments_content.setVisible(True)
             self.attachments_header.setObjectName("AccordionHeaderExpanded")
         else:
+            # Closing this panel
+            self.attachments_content.setVisible(False)
             self.attachments_header.setObjectName("AccordionHeader")
         
         # Force style update
@@ -534,12 +622,15 @@ class DebuglyMainWindow(QtWidgets.QWidget):
     def _toggle_logs_panel(self):
         """Toggle the visibility of the logs panel"""
         is_visible = self.logs_content.isVisible()
-        self.logs_content.setVisible(not is_visible)
         
-        # Update header appearance based on state
         if not is_visible:
+            # Opening this panel - close all others first
+            self._close_all_other_panels('logs')
+            self.logs_content.setVisible(True)
             self.logs_header.setObjectName("AccordionHeaderExpanded")
         else:
+            # Closing this panel
+            self.logs_content.setVisible(False)
             self.logs_header.setObjectName("AccordionHeader")
         
         # Force style update
@@ -554,12 +645,15 @@ class DebuglyMainWindow(QtWidgets.QWidget):
     def _toggle_collected_info_panel(self):
         """Toggle the visibility of the collected info panel"""
         is_visible = self.collected_info_content.isVisible()
-        self.collected_info_content.setVisible(not is_visible)
         
-        # Update header appearance based on state
         if not is_visible:
+            # Opening this panel - close all others first
+            self._close_all_other_panels('collected_info')
+            self.collected_info_content.setVisible(True)
             self.collected_info_header.setObjectName("AccordionHeaderExpanded")
         else:
+            # Closing this panel
+            self.collected_info_content.setVisible(False)
             self.collected_info_header.setObjectName("AccordionHeader")
         
         # Force style update
@@ -577,6 +671,28 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.collected_info_header.setText(f"ℹ️ Collected Info ({count} sections)")
         else:
             self.collected_info_header.setText("ℹ️ Collected Info")
+
+    def _close_all_other_panels(self, current_panel):
+        """Close all accordion panels except the specified one"""
+        panels = {
+            'screenshots': (self.screenshot_content, self.screenshot_header),
+            'attachments': (self.attachments_content, self.attachments_header),
+            'logs': (self.logs_content, self.logs_header),
+            'collected_info': (self.collected_info_content, self.collected_info_header)
+        }
+        
+        for panel_name, (content, header) in panels.items():
+            if panel_name != current_panel:
+                content.setVisible(False)
+                header.setObjectName("AccordionHeader")
+                # Force style update
+                header.style().unpolish(header)
+                header.style().polish(header)
+                
+                # Ensure font weight is maintained
+                fa = QFont(self.fontawesome_family, 11)
+                fa.setWeight(QtGui.QFont.Black)
+                header.setFont(fa)
 
     def _setup_log_list(self):
         """Setup logs collector and populate logs widget"""
@@ -643,8 +759,8 @@ class DebuglyMainWindow(QtWidgets.QWidget):
 
     def _generate_screenshot_name(self, base_name="issue"):
         """Generate a unique screenshot filename"""
-        import tempfile
         import os
+        import tempfile
         
         # Get title for naming
         title = self.title_edit.text().strip()
@@ -704,6 +820,65 @@ class DebuglyMainWindow(QtWidgets.QWidget):
 
     def _on_marquee_finished(self, rect):
         """Handle screenshot area selection completion"""
+        if rect and rect.isValid():
+            try:
+                # Minimize the app to prevent it from appearing in the screenshot
+                self.setWindowState(QtCore.Qt.WindowMinimized)
+                QtWidgets.QApplication.processEvents()
+                
+                # Get the screen where the marquee was positioned
+                marquee_screen = getattr(self.marquee, 'target_screen', None)
+                if not marquee_screen:
+                    marquee_screen = QtWidgets.QApplication.screenAt(QtGui.QCursor.pos())
+                if not marquee_screen:
+                    marquee_screen = QtWidgets.QApplication.primaryScreen()
+                
+                # Use screen.grabWindow with coordinates relative to screen
+                # This handles multi-monitor setups correctly
+                screen_rect = marquee_screen.geometry()
+                
+                # The selection rectangle is already in the marquee widget's coordinate system
+                # which is positioned at the screen's origin, so we can use it directly
+                x = rect.x()
+                y = rect.y()
+                width = rect.width()
+                height = rect.height()
+                
+                # Take screenshot using screen-specific coordinates
+                cropped_pixmap = marquee_screen.grabWindow(0, x, y, width, height)
+                
+                log.info("=== AYON-STYLE SCREENSHOT ===")
+                log.info(f"Marquee selection rect: {rect}")
+                log.info(f"Screen geometry: {screen_rect}")
+                log.info(f"Screen-relative coordinates: ({x}, {y}, {width}, {height})")
+                log.info(f"Using screen.grabWindow(0, {x}, {y}, {width}, {height})")
+                log.info(f"Cropped pixmap size: {cropped_pixmap.size()}")
+                log.info("=== END DEBUG INFO ===")
+                
+                # Generate unique filename
+                new_name = self._generate_screenshot_name()
+                
+                # Save screenshot
+                if cropped_pixmap.save(new_name, "PNG"):
+                    # Add to attachment list
+                    self.attachment_widget.add_attachment(new_name)
+                    
+                    # Update carousel to show the latest screenshot
+                    if hasattr(self, 'screenshot_carousel'):
+                        self.screenshot_carousel.add_screenshot(new_name)
+                    
+                    self.statusLabel.setText(f"Area screenshot added: {os.path.basename(new_name)}")
+                    log.info(f"Area screenshot taken and added: {new_name}")
+                else:
+                    self.statusLabel.setText("Failed to save area screenshot")
+                    log.error("Failed to save area screenshot")
+                    
+            except Exception as e:
+                self.statusLabel.setText(f"Failed to take area screenshot: {str(e)}")
+                log.error(f"Failed to take area screenshot: {e}")
+        else:
+            self.statusLabel.setText("Screenshot area selection cancelled")
+            
         # Restore the main window from minimized state
         self.setWindowState(QtCore.Qt.WindowActive)
         self.show()
@@ -718,56 +893,6 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             x = (screen_rect.width() - window_rect.width()) // 2
             y = (screen_rect.height() - window_rect.height()) // 2
             self.move(x, y)
-        
-        if rect and rect.isValid():
-            try:
-                # Get the screen where the marquee was positioned
-                marquee_screen = QtWidgets.QApplication.screenAt(QtGui.QCursor.pos())
-                if not marquee_screen:
-                    marquee_screen = QtWidgets.QApplication.primaryScreen()
-                
-                # Take screenshot of the specific screen
-                screenshot = marquee_screen.grabWindow(0)
-                
-                # Get screen geometry
-                screen_rect = marquee_screen.geometry()
-                
-                # Adjust coordinates to be relative to the screen
-                adjusted_rect = QtCore.QRect(
-                    rect.x(),
-                    rect.y(),
-                    rect.width(),
-                    rect.height()
-                )
-                
-                log.info(f"Marquee selection rect: {rect}")
-                log.info(f"Screen geometry: {screen_rect}")
-                log.info(f"Adjusted rect: {adjusted_rect}")
-                log.info(f"Screen screenshot size: {screenshot.size()}")
-             
-                
-                # Crop the screenshot to the selected area
-                cropped_pixmap = screenshot.copy(adjusted_rect)
-                
-                # Generate unique filename
-                new_name = self._generate_screenshot_name()
-                
-                # Save screenshot
-                if cropped_pixmap.save(new_name, "PNG"):
-                    # Add to attachment list
-                    self.attachment_widget.add_attachment(new_name)
-                    
-                    self.statusLabel.setText(f"Area screenshot added: {os.path.basename(new_name)}")
-                    log.info(f"Area screenshot taken and added: {new_name}")
-                else:
-                    self.statusLabel.setText("Failed to save area screenshot")
-                    log.error("Failed to save area screenshot")
-                    
-            except Exception as e:
-                self.statusLabel.setText(f"Failed to take area screenshot: {str(e)}")
-                log.error(f"Failed to take area screenshot: {e}")
-        else:
-            self.statusLabel.setText("Screenshot area selection cancelled")
 
     def submit_report(self):
         # Get title and message
@@ -1064,6 +1189,27 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 font-size: 10px;
                 background: transparent;
             }}
+            
+            QPushButton#SectionHeaderButton {{
+                background-color: #3D3D3D;
+                color: #E0E0E0;
+                border: 1px solid #666666;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-weight: 500;
+                text-align: left;
+                font-size: 12px;
+            }}
+            
+            QPushButton#SectionHeaderButton:hover {{
+                background-color: #4D4D4D;
+                border-color: #888888;
+            }}
+            
+            QWidget#SectionContent {{
+                background-color: transparent;
+                border: none;
+            }}
         """)
         # Set wysiwyg font size
         self.wysiwyg.setStyleSheet("font-size: 11pt;")
@@ -1109,24 +1255,9 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 if section_name == "log_files":
                     continue  # Skip log files as they're handled separately
                 
-                # Create section header
-                section_header = QtWidgets.QLabel(section_name.replace("_", " ").title())
-                section_header.setObjectName("SectionHeader")
-                section_header.setStyleSheet("""
-                    QLabel {
-                        font-weight: bold;
-                        color: #E0E0E0;
-                        background-color: #3D3D3D;
-                        padding: 4px 8px;
-                        border-radius: 4px;
-                        margin-top: 8px;
-                        margin-bottom: 4px;
-                    }
-                """)
-                self.collected_info_layout.addWidget(section_header)
-                
-                # Create fields for this section
-                self._add_metadata_fields(section_data, section_name)
+                # Create collapsible section
+                section_widget = self._create_collapsible_section(section_name, section_data)
+                self.collected_info_layout.addWidget(section_widget)
             
             # Update the header to show data was collected
             count = len([k for k in self.collected_metadata.keys() if k != "log_files"])
@@ -1139,8 +1270,60 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             error_label.setStyleSheet("color: #ff6b6b;")
             self.collected_info_layout.addWidget(error_label)
 
-    def _add_metadata_fields(self, data, section_name, parent_key=""):
+    def _create_collapsible_section(self, section_name, section_data):
+        """Create a collapsible section for metadata"""
+        # Main container widget
+        section_widget = QtWidgets.QWidget()
+        section_layout = QtWidgets.QVBoxLayout(section_widget)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(0)
+        
+        # Section header button (collapsible)
+        header_button = QtWidgets.QPushButton()
+        header_button.setObjectName("SectionHeaderButton")
+        header_button.setFixedHeight(28)
+        
+        # Format section name for display
+        display_name = section_name.replace("_", " ").title()
+        header_button.setText(f"▼ {display_name}")
+        header_button.clicked.connect(lambda: self._toggle_section(header_button, content_widget))
+        
+        # Content panel (initially visible)
+        content_widget = QtWidgets.QWidget()
+        content_widget.setObjectName("SectionContent")
+        content_layout = QtWidgets.QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(8, 4, 8, 8)
+        content_layout.setSpacing(4)
+        
+        # Create fields for this section
+        self._add_metadata_fields(section_data, section_name, "", content_layout)
+        
+        # Add widgets to section
+        section_layout.addWidget(header_button)
+        section_layout.addWidget(content_widget)
+        
+        return section_widget
+
+    def _toggle_section(self, header_button, content_widget):
+        """Toggle the visibility of a collapsible section"""
+        is_visible = content_widget.isVisible()
+        
+        if is_visible:
+            content_widget.setVisible(False)
+            # Change arrow to right (collapsed)
+            current_text = header_button.text()
+            header_button.setText(current_text.replace("▼", "▶"))
+        else:
+            content_widget.setVisible(True)
+            # Change arrow to down (expanded)
+            current_text = header_button.text()
+            header_button.setText(current_text.replace("▶", "▼"))
+
+    def _add_metadata_fields(self, data, section_name, parent_key="", layout=None):
         """Recursively add metadata fields to the layout"""
+        if layout is None:
+            layout = self.collected_info_layout
+            
         if isinstance(data, dict):
             for key, value in data.items():
                 full_key = f"{parent_key}.{key}" if parent_key else key
@@ -1156,22 +1339,25 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                             margin-bottom: 2px;
                         }
                     """)
-                    self.collected_info_layout.addWidget(subsection_header)
-                    self._add_metadata_fields(value, section_name, full_key)
+                    layout.addWidget(subsection_header)
+                    self._add_metadata_fields(value, section_name, full_key, layout)
                 else:
-                    self._add_field(full_key, value)
+                    self._add_field(full_key, value, layout)
         elif isinstance(data, list):
             # Handle lists (like environment variables, etc.)
             for i, item in enumerate(data):
                 if isinstance(item, dict):
-                    self._add_metadata_fields(item, section_name, f"{parent_key}[{i}]")
+                    self._add_metadata_fields(item, section_name, f"{parent_key}[{i}]", layout)
                 else:
-                    self._add_field(f"{parent_key}[{i}]", item)
+                    self._add_field(f"{parent_key}[{i}]", item, layout)
         else:
-            self._add_field(parent_key or section_name, data)
+            self._add_field(parent_key or section_name, data, layout)
 
-    def _add_field(self, key, value):
+    def _add_field(self, key, value, layout=None):
         """Add a single field to the layout"""
+        if layout is None:
+            layout = self.collected_info_layout
+            
         # Skip certain keys that are too verbose or not useful
         skip_keys = ['python_path', 'python_packages']
         if key in skip_keys:
@@ -1183,14 +1369,33 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         field_layout.setContentsMargins(0, 0, 0, 0)
         field_layout.setSpacing(8)
         
-        # Create label
-        label_text = key.replace("_", " ").title()
-        # Clean up some common labels
-        label_text = label_text.replace("Cwd", "Working Directory")
-        label_text = label_text.replace("Uid", "User ID")
-        label_text = label_text.replace("Gpu", "GPU")
-        label_text = label_text.replace("Cpu", "CPU")
-        label_text = label_text.replace("Ram", "RAM")
+        # Create label - preserve original case for environment variables
+        if key.startswith("Environment Variables."):
+            # For environment variables, use the original key name
+            original_key = key.replace("Environment Variables.", "")
+            label_text = original_key
+        elif key.startswith("env."):
+            # For environment variables, use the original key name
+            original_key = key.replace("env.", "")
+            label_text = original_key
+        elif "." in key:
+            # For nested keys, use the last part as the label
+            label_text = key.split(".")[-1]
+            # Clean up some common labels
+            label_text = label_text.replace("_", " ").title()
+            label_text = label_text.replace("Cwd", "Working Directory")
+            label_text = label_text.replace("Uid", "User ID")
+            label_text = label_text.replace("Gpu", "GPU")
+            label_text = label_text.replace("Cpu", "CPU")
+            label_text = label_text.replace("Ram", "RAM")
+        else:
+            label_text = key.replace("_", " ").title()
+            # Clean up some common labels
+            label_text = label_text.replace("Cwd", "Working Directory")
+            label_text = label_text.replace("Uid", "User ID")
+            label_text = label_text.replace("Gpu", "GPU")
+            label_text = label_text.replace("Cpu", "CPU")
+            label_text = label_text.replace("Ram", "RAM")
         
         label = QtWidgets.QLabel(label_text)
         label.setMinimumWidth(140)
@@ -1254,7 +1459,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             """)
         
         field_layout.addWidget(value_widget, 1)  # 1 = stretch factor
-        self.collected_info_layout.addWidget(field_widget)
+        layout.addWidget(field_widget)
 
     def _setup_fontawesome(self):
         """Load FontAwesome 7 Free Solid font and store the family name."""
@@ -1269,5 +1474,36 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                     self.fontawesome_family = font_families[0]
         if not self.fontawesome_family:
             self.fontawesome_family = "FontAwesome"
+
+    def _initialize_accordion(self):
+        """Initialize the accordion to have only the screenshots panel open by default."""
+        # Close all panels first
+        self.screenshot_content.setVisible(False)
+        self.attachments_content.setVisible(False)
+        self.collected_info_content.setVisible(False)
+        self.logs_content.setVisible(False)
+        
+        # Reset all headers to collapsed state
+        self.screenshot_header.setObjectName("AccordionHeader")
+        self.attachments_header.setObjectName("AccordionHeader")
+        self.collected_info_header.setObjectName("AccordionHeader")
+        self.logs_header.setObjectName("AccordionHeader")
+        
+        # Force style updates
+        for header in [self.screenshot_header, self.attachments_header, 
+                      self.collected_info_header, self.logs_header]:
+            header.style().unpolish(header)
+            header.style().polish(header)
+            
+            # Ensure font weight is maintained
+            fa = QFont(self.fontawesome_family, 11)
+            fa.setWeight(QtGui.QFont.Black)
+            header.setFont(fa)
+        
+        # Open screenshots panel by default
+        self.screenshot_content.setVisible(True)
+        self.screenshot_header.setObjectName("AccordionHeaderExpanded")
+        self.screenshot_header.style().unpolish(self.screenshot_header)
+        self.screenshot_header.style().polish(self.screenshot_header)
 
 
