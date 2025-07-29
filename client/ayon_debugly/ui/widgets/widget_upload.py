@@ -1,5 +1,7 @@
-from qtpy import QtWidgets, QtCore
-import os
+
+from qtpy import QtCore, QtWidgets
+
+
 
 class UploadWidget(QtWidgets.QFrame):
     filesDropped = QtCore.Signal(list)

@@ -1,6 +1,7 @@
-from qtpy import QtWidgets, QtGui, QtCore
-import os
 import tempfile
+
+from qtpy import QtCore, QtGui, QtWidgets
+
 
 class ScreenshotWidget(QtWidgets.QWidget):
     screenshotTaken = QtCore.Signal(str)

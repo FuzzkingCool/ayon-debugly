@@ -8,7 +8,7 @@ try:
     from ayon_debugly.debugly_issue_manager import DebuglyIssueManager
     from ayon_debugly.logger import log
 
-    print(f"Successfully loaded ayon_debugly {__version__}")
+    log.debug(f"Successfully loaded ayon_debugly {__version__}")
 
     __all__ = (
         "__version__",
@@ -19,6 +19,6 @@ try:
         "DebuglyIssueManager",
     )
 except Exception as e:
-    print(f"ERROR loading ayon_debugly: {e}")
-    print(traceback.format_exc())
+    log.debug(f"ERROR loading ayon_debugly: {e}")
+    log.debug(traceback.format_exc())
 

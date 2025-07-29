@@ -1,5 +1,9 @@
-from qtpy import QtWidgets, QtCore, QtGui
 import os
+
+from qtpy import QtCore, QtGui, QtWidgets
+
+from ayon_debugly.logger import log
+
 
 class AttachmentListWidget(QtWidgets.QWidget):
     attachmentRemoved = QtCore.Signal(str)  # emits the file path
@@ -204,8 +208,8 @@ class AttachmentListWidget(QtWidgets.QWidget):
         """Open attachment in OS file explorer"""
         path = item.data(QtCore.Qt.UserRole)
         if path and os.path.exists(path):
-            import subprocess
             import platform
+            import subprocess
             
             try:
                 if platform.system() == "Windows":
@@ -215,7 +219,7 @@ class AttachmentListWidget(QtWidgets.QWidget):
                 else:  # Linux
                     subprocess.run(["xdg-open", os.path.dirname(path)], check=True)
             except subprocess.CalledProcessError as e:
-                print(f"Failed to open file: {e}")
+                log.debug(f"Failed to open file: {e}")
 
     def _show_context_menu(self, pos):
         item = self.list_widget.itemAt(pos)

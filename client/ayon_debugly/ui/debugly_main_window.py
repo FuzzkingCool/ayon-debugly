@@ -670,23 +670,24 @@ class DebuglyMainWindow(QtWidgets.QWidget):
 
     def capture_area(self):
         try:
-            print("Starting area capture...")
-            # Hide main window temporarily
-            self.hide()
+            log.debug("Starting area capture...")
+            # Minimize the main window (canonical approach)
+            self.setWindowState(QtCore.Qt.WindowMinimized)
             QtWidgets.QApplication.processEvents()
             
-            # Wait a moment for window to hide, then show marquee
-            QtCore.QTimer.singleShot(200, self._show_marquee)
+            # Wait a moment for window to minimize, then show marquee
+            QtCore.QTimer.singleShot(300, self._show_marquee)
             
         except Exception as e:
-            self.show()  # Make sure to show window again
-            log.error(f"Failed to capture area: {e}")
-            log.error(traceback.format_exc())
-            QtWidgets.QMessageBox.critical(self, "Capture Area Failed", str(e))
-
+            log.debug(f"Error starting area capture: {e}")
+            self.setWindowState(QtCore.Qt.WindowActive)
+            self.show()
+            self.activateWindow()
+            QtWidgets.QMessageBox.critical(self, "Area Capture Failed", str(e))
+            
     def _show_marquee(self):
         try:
-            print("Showing marquee...")
+            log.debug("Showing marquee...")
             from ayon_debugly.ui.widgets.screenshot_marquee import ScreenMarquee
             
             # Create and show marquee
@@ -694,30 +695,65 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.marquee.finished.connect(self._on_marquee_finished)
             self.marquee.show()
             
-            print("Marquee should be visible now")
+            log.debug("Marquee should be visible now")
             
         except Exception as e:
-            print(f"Error showing marquee: {e}")
+            log.debug(f"Error showing marquee: {e}")
             self.show()
             QtWidgets.QMessageBox.critical(self, "Marquee Failed", str(e))
 
     def _on_marquee_finished(self, rect):
         """Handle screenshot area selection completion"""
-        # Always show the main window again
+        # Restore the main window from minimized state
+        self.setWindowState(QtCore.Qt.WindowActive)
         self.show()
         self.activateWindow()
+        self.raise_()
+        
+        # Center the window if it's not in a reasonable position
+        if self.x() < 100 or self.y() < 100:
+            screen = QtWidgets.QApplication.primaryScreen()
+            screen_rect = screen.geometry()
+            window_rect = self.geometry()
+            x = (screen_rect.width() - window_rect.width()) // 2
+            y = (screen_rect.height() - window_rect.height()) // 2
+            self.move(x, y)
         
         if rect and rect.isValid():
             try:
-                # Take screenshot of selected area
-                screen = QtWidgets.QApplication.primaryScreen()
-                pixmap = screen.grabWindow(0, rect.x(), rect.y(), rect.width(), rect.height())
+                # Get the screen where the marquee was positioned
+                marquee_screen = QtWidgets.QApplication.screenAt(QtGui.QCursor.pos())
+                if not marquee_screen:
+                    marquee_screen = QtWidgets.QApplication.primaryScreen()
+                
+                # Take screenshot of the specific screen
+                screenshot = marquee_screen.grabWindow(0)
+                
+                # Get screen geometry
+                screen_rect = marquee_screen.geometry()
+                
+                # Adjust coordinates to be relative to the screen
+                adjusted_rect = QtCore.QRect(
+                    rect.x(),
+                    rect.y(),
+                    rect.width(),
+                    rect.height()
+                )
+                
+                log.info(f"Marquee selection rect: {rect}")
+                log.info(f"Screen geometry: {screen_rect}")
+                log.info(f"Adjusted rect: {adjusted_rect}")
+                log.info(f"Screen screenshot size: {screenshot.size()}")
+             
+                
+                # Crop the screenshot to the selected area
+                cropped_pixmap = screenshot.copy(adjusted_rect)
                 
                 # Generate unique filename
                 new_name = self._generate_screenshot_name()
                 
                 # Save screenshot
-                if pixmap.save(new_name, "PNG"):
+                if cropped_pixmap.save(new_name, "PNG"):
                     # Add to attachment list
                     self.attachment_widget.add_attachment(new_name)
                     

@@ -4,7 +4,7 @@ import re
 from qtpy import QtGui, QtWidgets, QtCore
 
 from ayon_debugly.lib import ADDON_ROOT
-
+from ayon_debugly.logger import log
 
 class LinkableTextEdit(QtWidgets.QTextEdit):
     """Custom QTextEdit that handles link clicks"""
@@ -28,7 +28,7 @@ class LinkableTextEdit(QtWidgets.QTextEdit):
         try:
             webbrowser.open(url)
         except Exception as e:
-            print(f"Failed to open URL {url}: {e}")
+            log.debug(f"Failed to open URL {url}: {e}")
             QtWidgets.QMessageBox.warning(self, "Link Error", f"Could not open link: {url}")
 
 
@@ -101,34 +101,34 @@ class WysiwygWidget(QtWidgets.QWidget):
     def _setup_font(self):
         # Load FontAwesome 7 Free Solid font
         font_path = os.path.join(ADDON_ROOT, "vendor", "fontawesome", "FontAwesome7Free-Solid-900.otf")
-        print(f"Looking for FontAwesome 7 at: {font_path}")
-        print(f"Font file exists: {os.path.exists(font_path)}")
+        log.debug(f"Looking for FontAwesome 7 at: {font_path}")
+        log.debug(f"Font file exists: {os.path.exists(font_path)}")
         
         self.fontawesome_family = None
         
         if os.path.exists(font_path):
             font_id = QtGui.QFontDatabase.addApplicationFont(font_path)
-            print(f"Font ID: {font_id}")
+            log.debug(f"Font ID: {font_id}")
             if font_id != -1:
                 font_families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
-                print(f"Available font families: {font_families}")
+                log.debug(f"Available font families: {font_families}")
                 if font_families:
                     self.fontawesome_family = font_families[0]
-                    print(f"Successfully loaded FontAwesome 7: {self.fontawesome_family}")
+                    log.debug(f"Successfully loaded FontAwesome 7: {self.fontawesome_family}")
                     
                     # Test if the font is working by creating a test font
                     test_font = QtGui.QFont()
                     test_font.setFamily(self.fontawesome_family)
                     test_font.setPointSize(12)
                     test_font.setWeight(QtGui.QFont.Black)
-                    print(f"Test font family: {test_font.family()}, weight: {test_font.weight()}")
+                    log.debug(f"Test font family: {test_font.family()}, weight: {test_font.weight()}")
                     
                 else:
-                    print("No font families found")
+                    log.debug("No font families found")
             else:
-                print("Failed to load font")
+                log.debug("Failed to load font")
         else:
-            print(f"Font file not found at {font_path}")
+            log.debug(f"Font file not found at {font_path}")
 
     def _setup_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
@@ -186,7 +186,7 @@ class WysiwygWidget(QtWidgets.QWidget):
    
 """
         template_html = simple_markdown_to_html(template_markdown)
-        print(f"Template HTML: {template_html}")
+        log.debug(f"Template HTML: {template_html}")
         self.editor.setHtml(template_html)
         layout.addWidget(self.editor)
 
@@ -199,7 +199,7 @@ class WysiwygWidget(QtWidgets.QWidget):
         # FontAwesome 7 Free Solid unicode codes - corrected
         try:
             if self.fontawesome_family:
-                print("Using FontAwesome 7 icons")
+                log.debug("Using FontAwesome 7 icons")
                 # FontAwesome 7 unicode characters (corrected codes)
                 self.bold_btn = self._create_text_button("B", "Bold", bold=True)
                 self.italic_btn = self._create_text_button("I", "Italic", italic=True)
@@ -220,7 +220,7 @@ class WysiwygWidget(QtWidgets.QWidget):
             else:
                 raise Exception("FontAwesome family not loaded")
         except Exception as e:
-            print(f"FontAwesome not loaded or failed: {e}, using text fallbacks")
+            log.debug(f"FontAwesome not loaded or failed: {e}, using text fallbacks")
             # Simple text fallbacks
             self.bold_btn = self._create_text_button("B", "Bold", bold=True)
             self.italic_btn = self._create_text_button("I", "Italic", italic=True)
@@ -294,8 +294,8 @@ class WysiwygWidget(QtWidgets.QWidget):
         """)
         
         # Debug output
-        print(f"Created button '{tooltip}': family='{font.family()}', weight={font.weight()}")
-        print(f"Button font family: '{btn.font().family()}'")
+        log.debug(f"Created button '{tooltip}': family='{font.family()}', weight={font.weight()}")
+        log.debug(f"Button font family: '{btn.font().family()}'")
         
         return btn
 

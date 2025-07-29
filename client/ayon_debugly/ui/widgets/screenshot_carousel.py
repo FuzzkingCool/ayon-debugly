@@ -1,5 +1,6 @@
 from qtpy import QtWidgets, QtCore, QtGui
 import os
+from ayon_debugly.logger import log
 
 class ScreenshotCarousel(QtWidgets.QWidget):
     """Widget to display screenshot thumbnails in a carousel format"""
@@ -179,7 +180,7 @@ class ScreenshotCarousel(QtWidgets.QWidget):
                     else:  # Linux
                         subprocess.run(["xdg-open", current_path], check=True)
                 except Exception as e:
-                    print(f"Failed to open screenshot: {e}")
+                    log.debug(f"Failed to open screenshot: {e}")
                     
     def get_screenshots(self):
         """Get list of all screenshots"""

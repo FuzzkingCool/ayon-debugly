@@ -71,7 +71,7 @@ if ayon_debug:
         file_handler.setLevel(logging.DEBUG)
         log.addHandler(file_handler)
     except Exception:
-        print(f"Failed to create log file in {log_dir}")
+        log.debug(f"Failed to create log file in {log_dir}")
 
 # Add console handler with explicit stream and error handling
 try:
@@ -80,7 +80,7 @@ try:
     stream_handler.setLevel(logging.DEBUG if ayon_debug else log.level)
     log.addHandler(stream_handler)
 except Exception:
-    print("Failed to create console log handler")
+    log.debug("Failed to create console log handler")
 
 # Create safe logging methods that won't crash
 def safe_log(func):
@@ -90,7 +90,7 @@ def safe_log(func):
             return func(msg, *args, **kwargs)
         except Exception:
             # Last resort - print directly to console
-            print(f"SAFE LOG: {msg}")
+            log.debug(f"SAFE LOG: {msg}")
     return wrapper
 
 # Apply safe wrappers to all logging methods
@@ -101,4 +101,4 @@ log.error = safe_log(log.error)
 log.critical = safe_log(log.critical)
 
 # Print confirmation that logger is initialized
-print(f"AYON {ADDON_NAME} logger initialized successfully")
+log.debug(f"AYON {ADDON_NAME} logger initialized successfully")

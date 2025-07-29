@@ -1,6 +1,10 @@
-from qtpy import QtWidgets, QtGui, QtCore
 import sys
 import tempfile
+
+from qtpy import QtCore, QtGui, QtWidgets
+
+from ayon_debugly.logger import log
+
 
 class ScreenMarquee(QtWidgets.QWidget):
     finished = QtCore.Signal(object)  # Emit the selection rectangle
@@ -10,18 +14,29 @@ class ScreenMarquee(QtWidgets.QWidget):
         self.setWindowFlags(
             QtCore.Qt.WindowStaysOnTopHint | 
             QtCore.Qt.FramelessWindowHint | 
-            QtCore.Qt.Tool
-            # Removed WindowDoesNotAcceptFocus - we need focus for mouse events
+            QtCore.Qt.Tool |
+            QtCore.Qt.WindowDoesNotAcceptFocus  # Prevent focus issues
         )
         
-        # Get screen geometry and set widget to cover all screens
-        screen = QtWidgets.QApplication.primaryScreen()
+        # Get the screen under the cursor for the marquee
+        cursor_pos = QtGui.QCursor.pos()
+        screen = QtWidgets.QApplication.screenAt(cursor_pos)
         if screen:
             screen_rect = screen.geometry()
-            self.setGeometry(screen_rect)
+            # Ensure we're positioning relative to the screen, not any parent
+            self.setGeometry(screen_rect.x(), screen_rect.y(), screen_rect.width(), screen_rect.height())
+            log.debug(f"Marquee positioned at: {screen_rect.x()}, {screen_rect.y()}, {screen_rect.width()}x{screen_rect.height()}")
         else:
-            # Fallback to available geometry
-            self.setGeometry(0, 0, 1920, 1080)
+            # Fallback to primary screen
+            screen = QtWidgets.QApplication.primaryScreen()
+            if screen:
+                screen_rect = screen.geometry()
+                self.setGeometry(screen_rect.x(), screen_rect.y(), screen_rect.width(), screen_rect.height())
+                log.debug(f"Marquee positioned at (fallback): {screen_rect.x()}, {screen_rect.y()}, {screen_rect.width()}x{screen_rect.height()}")
+            else:
+                # Final fallback
+                self.setGeometry(0, 0, 1920, 1080)
+                log.debug("Marquee positioned at (final fallback): 0, 0, 1920x1080")
         
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setCursor(QtCore.Qt.CrossCursor)
@@ -32,15 +47,19 @@ class ScreenMarquee(QtWidgets.QWidget):
         # Track if we're actively selecting
         self.selecting = False
         
-        print("ScreenMarquee created")
+        log.debug("ScreenMarquee created")
 
     def showEvent(self, event):
         super().showEvent(event)
-        print("ScreenMarquee shown")
-        # Force focus and raise
+        log.debug("ScreenMarquee shown")
+        # Force focus and raise, and ensure we're on top
         self.raise_()
         self.activateWindow()
         self.setFocus()
+        
+        # Ensure we're truly on top of everything
+        self.setWindowState(QtCore.Qt.WindowActive)
+        QtWidgets.QApplication.processEvents()
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
@@ -60,7 +79,7 @@ class ScreenMarquee(QtWidgets.QWidget):
             painter.drawRect(selection)
 
     def mousePressEvent(self, event):
-        print(f"Mouse press: {event.button()}, pos: {event.pos()}")
+        log.debug(f"Mouse press: {event.button()}, pos: {event.pos()}, global pos: {event.globalPos()}")
         if event.button() == QtCore.Qt.LeftButton:
             self.start = event.pos()
             self.end = self.start
@@ -73,26 +92,27 @@ class ScreenMarquee(QtWidgets.QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
-        print(f"Mouse release: {event.button()}, selecting: {self.selecting}")
+        log.debug(f"Mouse release: {event.button()}, selecting: {self.selecting}, pos: {event.pos()}, global pos: {event.globalPos()}")
         if event.button() == QtCore.Qt.LeftButton and self.selecting:
             self.end = event.pos()
             self.selection_rect = QtCore.QRect(self.start, self.end).normalized()
-            print(f"Selection made: {self.selection_rect}")
+            log.debug(f"Selection made: {self.selection_rect}")
+            log.debug(f"Marquee widget geometry: {self.geometry()}")
             self.selecting = False
             self.close()
             self.finished.emit(self.selection_rect)
 
     def keyPressEvent(self, event):
-        print(f"Key press: {event.key()}")
+        log.debug(f"Key press: {event.key()}")
         if event.key() == QtCore.Qt.Key_Escape:
-            print("Escape pressed - cancelling")
+            log.debug("Escape pressed - cancelling")
             self.selection_rect = None
             self.selecting = False
             self.close()
             self.finished.emit(None)
 
     def closeEvent(self, event):
-        print("ScreenMarquee closing")
+        log.debug("ScreenMarquee closing")
         super().closeEvent(event)
 
     @staticmethod
