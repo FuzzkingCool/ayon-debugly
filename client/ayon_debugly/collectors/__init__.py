@@ -7,7 +7,7 @@ import os
 import importlib
 import inspect
 from typing import Dict, List, Type, Any
-from .collector_base import CollectorBase
+from ayon_debugly.collectors.collector_base import CollectorBase
 
 # Collector registry
 _collectors: Dict[str, Type[CollectorBase]] = {}

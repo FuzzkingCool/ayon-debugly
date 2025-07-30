@@ -1,4 +1,4 @@
-from .collector_base import CollectorBase
+from ayon_debugly.collectors.collector_base import CollectorBase
 import platform
 import socket
 import time

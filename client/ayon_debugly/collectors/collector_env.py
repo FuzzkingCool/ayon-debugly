@@ -1,4 +1,4 @@
-from .collector_base import CollectorBase, redact_dict
+from ayon_debugly.collectors.collector_base import CollectorBase, redact_dict
 import os
 import sys
 

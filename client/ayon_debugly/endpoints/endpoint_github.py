@@ -1,4 +1,4 @@
-from .endpoint_base import EndpointBase
+from ayon_debugly.endpoints.endpoint_base import EndpointBase
 import requests
 import os
 
