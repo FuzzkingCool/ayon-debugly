@@ -3,7 +3,13 @@ from typing import List
 from ayon_server.settings import BaseSettingsModel, SettingsField # type: ignore
 
 
-class PlatformPaths(BaseSettingsModel):
+class SharedDirectoryConfig(BaseSettingsModel):
+    _layout = "expanded"
+    enabled: bool = SettingsField(
+        default=True,
+        title="Enabled",
+        description="Enable or disable shared directory endpoint.",
+    )
     windows: str = SettingsField(
         default="P:\\Pipeline\\ayon_issues",
         title="Windows",
@@ -22,6 +28,7 @@ class PlatformPaths(BaseSettingsModel):
 
 
 class LogDirEntry(BaseSettingsModel):
+    _layout = "expanded"
     windows: str = SettingsField(
         default_factory=lambda: "~/.ayon/logs",
         title="Windows",
@@ -39,7 +46,60 @@ class LogDirEntry(BaseSettingsModel):
     )
 
 
+class LogFileEntry(BaseSettingsModel):
+    _layout = "expanded"
+    windows: str = SettingsField(
+        default="",
+        title="Windows",
+        description="Specific log file path for Windows.",
+    )
+    macos: str = SettingsField(
+        default="",
+        title="macOS",
+        description="Specific log file path for macOS.",
+    )
+    linux: str = SettingsField(
+        default="",
+        title="Linux",
+        description="Specific log file path for Linux.",
+    )
+
+
+class LogPatternEntry(BaseSettingsModel):
+    _layout = "expanded"
+    windows: str = SettingsField(
+        default="",
+        title="Windows",
+        description="Regex pattern for log files on Windows.",
+    )
+    macos: str = SettingsField(
+        default="",
+        title="macOS",
+        description="Regex pattern for log files on macOS.",
+    )
+    linux: str = SettingsField(
+        default="",
+        title="Linux",
+        description="Regex pattern for log files on Linux.",
+    )
+
+
+class LogRedactionEntry(BaseSettingsModel):
+    _layout = "expanded"
+    pattern: str = SettingsField(
+        default="",
+        title="Redaction Pattern",
+        description="Regex pattern to redact from log content (e.g., 'password=\\w+', 'token=[a-zA-Z0-9]+')",
+    )
+    replacement: str = SettingsField(
+        default="***REDACTED***",
+        title="Replacement Text",
+        description="Text to replace matched patterns with.",
+    )
+
+
 class SoftwarePlatformCheck(BaseSettingsModel):
+    _layout = "expanded"
     exe: str = SettingsField(
         default="",
         title="Executable Name",
@@ -53,6 +113,7 @@ class SoftwarePlatformCheck(BaseSettingsModel):
 
 
 class SoftwareCheckEntry(BaseSettingsModel):
+    _layout = "expanded"
     name: str = SettingsField(
         "",
         title="Software Name",
@@ -75,19 +136,29 @@ class SoftwareCheckEntry(BaseSettingsModel):
     )
 
 
-class DebuglySettings(BaseSettingsModel):
-    """Settings for the Debugly addon."""
-
-    enabled: bool = SettingsField(
-        True,
-        title="Enabled",
-        description="Enable or disable the Debugly addon.",
-    )
-    shared_dir: PlatformPaths = SettingsField(
-        default_factory=PlatformPaths,
+class SharedDirSettings(BaseSettingsModel):
+    """Shared directory endpoint configuration."""
+    
+    shared_dir: SharedDirectoryConfig = SettingsField(
+        default_factory=SharedDirectoryConfig,
         title="Shared Directory",
         description="Directory where user reports will be stored, per platform.",
     )
+
+
+class EndpointsSettings(BaseSettingsModel):
+    """Endpoints configuration."""
+    
+    shared_dir: SharedDirSettings = SettingsField(
+        default_factory=SharedDirSettings,
+        title="Shared Dir",
+        description="Shared directory endpoint for storing issue reports.",
+    )
+
+
+class LogsSettings(BaseSettingsModel):
+    """Logs collection configuration."""
+    
     log_dirs: List[LogDirEntry] = SettingsField(
         default_factory=lambda: [
             LogDirEntry(
@@ -103,6 +174,171 @@ class DebuglySettings(BaseSettingsModel):
         ],
         title="Log Directories",
         description="List of log directories to search, per platform.",
+    )
+    log_files: List[LogFileEntry] = SettingsField(
+        default_factory=lambda: [
+            LogFileEntry(
+                windows="C:\\Users\\Public\\Documents\\AYON\\ayon.log",
+                macos="~/Library/Logs/AYON/ayon.log",
+                linux="/var/log/ayon/ayon.log",
+            ),
+        ],
+        title="Log Files",
+        description="List of specific log files to collect, per platform.",
+    )
+    log_patterns: List[LogPatternEntry] = SettingsField(
+        default_factory=lambda: [
+            LogPatternEntry(
+                windows=".*\\\\logs\\\\.*\\.log$",
+                macos=".*/logs/.*\\.log$",
+                linux="/var/log/.*\\.log$",
+            ),
+        ],
+        title="Log Patterns",
+        description="List of regex patterns to match log files, per platform.",
+    )
+
+
+class EnvironmentRedactionsSettings(BaseSettingsModel):
+    """Environment redactions configuration."""
+    
+    enabled: bool = SettingsField(
+        default=True,
+        title="Enabled",
+        description="Enable or disable environment variable redaction.",
+    )
+    
+    env_redact_keys: List[str] = SettingsField(
+        default_factory=lambda: [
+            "PASSWORD", "TOKEN", "SECRET", "KEY", "AUTH", "SESSION", 
+            "COOKIE", "KITSU_PWD", "API_KEY", "PRIVATE_KEY", "ACCESS_TOKEN"
+        ],
+        title="Environment Key Redactions",
+        description="List of environment variable key names to redact from collected data.",
+    )
+
+
+class LogRedactionsSettings(BaseSettingsModel):
+    """Log redactions configuration."""
+    
+    enabled: bool = SettingsField(
+        default=True,
+        title="Enabled",
+        description="Enable or disable log content redaction.",
+    )
+    
+    log_redactions: List[LogRedactionEntry] = SettingsField(
+        default_factory=lambda: [
+            LogRedactionEntry(
+                pattern="password=([^\\s&;,\\n]+)",
+                replacement="password=***REDACTED***"
+            ),
+            LogRedactionEntry(
+                pattern="token=([a-zA-Z0-9_-]+)",
+                replacement="token=***REDACTED***"
+            ),
+            LogRedactionEntry(
+                pattern="secret=([^\\s&;,\\n]+)",
+                replacement="secret=***REDACTED***"
+            ),
+            LogRedactionEntry(
+                pattern="api_key=([^\\s&;,\\n]+)",
+                replacement="api_key=***REDACTED***"
+            ),
+            LogRedactionEntry(
+                pattern="auth_token=([^\\s&;,\\n]+)",
+                replacement="auth_token=***REDACTED***"
+            ),
+        ],
+        title="Log Redactions",
+        description="List of regex patterns to redact from log content before submission.",
+    )
+
+
+class RedactionsSettings(BaseSettingsModel):
+    """Redactions configuration."""
+    
+    environment: EnvironmentRedactionsSettings = SettingsField(
+        default_factory=EnvironmentRedactionsSettings,
+        title="Environment Redactions",
+        description="Environment variable redaction settings.",
+    )
+    
+    log: LogRedactionsSettings = SettingsField(
+        default_factory=LogRedactionsSettings,
+        title="Log Redactions",
+        description="Log content redaction settings.",
+    )
+
+
+
+
+
+class IssueSettings(BaseSettingsModel):
+    """Issue configuration."""
+    
+    issue_default_text: str = SettingsField(
+        default="""# Problem
+---
+   
+**Context & description:** Explain what you were trying to accomplish when the bug occurred
+
+   
+# Expected behavior
+---
+   
+**Expected vs. actual behavior:** Clearly distinguish between what you expected to happen and what actually happened.
+   
+   
+   
+# How to reproduce
+---
+**Step-by-step reproduction:** List the exact steps someone else would need to follow to encounter the same issue
+
+   
+   
+""",
+        title="Issue Default Text",
+        description="Default text template for new issue reports.",
+        widget="textarea",
+    )
+
+
+class DebuglySettings(BaseSettingsModel):
+    """Settings for the Debugly addon."""
+
+    enabled: bool = SettingsField(
+        True,
+        title="Enabled",
+        description="Enable or disable the Debugly addon.",
+    )
+    
+    # Issue Settings
+    issue_settings: IssueSettings = SettingsField(
+        default_factory=IssueSettings,
+        title="Issue Settings",
+        description="Issue report configuration and templates.",
+    )
+    
+    # Endpoints Settings
+    endpoints: EndpointsSettings = SettingsField(
+        default_factory=EndpointsSettings,
+        title="Endpoints",
+        description="Endpoint configurations for report submission.",
+    )
+    
+    # Logs Settings
+    logs: LogsSettings = SettingsField(
+        default_factory=LogsSettings,
+        title="Logs",
+        description="Log collection and processing settings.",
+    )
+    
+    # Redactions Settings
+    redactions: RedactionsSettings = SettingsField(
+        default_factory=RedactionsSettings,
+        title="Redactions",
+        description="Data redaction settings for privacy and security.",
     )
     software_checks: List[SoftwareCheckEntry] = SettingsField(
         default_factory=lambda: [
@@ -156,18 +392,103 @@ def get_default_settings_model():
 
 DEFAULT_DEBUGLY_SETTINGS = {
     "enabled": True,
-    "shared_dir": {
-        "windows": "P:\\Pipeline\\ayon_issues",
-        "macos": "/Volumes/Pipeline/ayon_issues",
-        "linux": "/mnt/Pipeline/ayon_issues",
+    
+    # Issue Settings
+    "issue_settings": {
+        "issue_default_text": """# Problem
+---
+   
+**Context & description:** Explain what you were trying to accomplish when the bug occurred
+
+   
+# Expected behavior
+---
+   
+**Expected vs. actual behavior:** Clearly distinguish between what you expected to happen and what actually happened.
+   
+   
+   
+# How to reproduce
+---
+**Step-by-step reproduction:** List the exact steps someone else would need to follow to encounter the same issue
+
+   
+   
+""",
     },
-    "log_dirs": [
-        {
-            "windows": "~\\.ayon\\logs",
-            "macos": "~\\.ayon\\logs",
-            "linux": "~\\.ayon\\logs",
+    
+    # Endpoints Settings
+    "endpoints": {
+        "shared_dir": {
+            "shared_dir": {
+                "enabled": True,
+                "windows": "P:\\Pipeline\\ayon_issues",
+                "macos": "/Volumes/Pipeline/ayon_issues",
+                "linux": "/mnt/Pipeline/ayon_issues",
+            },
         },
-    ],
+    },
+    
+    # Logs Settings
+    "logs": {
+        "log_dirs": [
+            {
+                "windows": "~\\.ayon\\logs",
+                "macos": "~\\.ayon\\logs",
+                "linux": "~\\.ayon\\logs",
+            },
+        ],
+        "log_files": [
+            {
+                "windows": "C:\\Users\\Public\\Documents\\AYON\\ayon.log",
+                "macos": "~/Library/Logs/AYON/ayon.log",
+                "linux": "/var/log/ayon/ayon.log",
+            },
+        ],
+        "log_patterns": [
+            {
+                "windows": ".*\\\\logs\\\\.*\\.log$",
+                "macos": ".*/logs/.*\\.log$",
+                "linux": "/var/log/.*\\.log$",
+            },
+        ],
+    },
+    
+    # Redactions Settings
+    "redactions": {
+        "environment": {
+            "enabled": True,
+            "env_redact_keys": [
+                "PASSWORD", "TOKEN", "SECRET", "KEY", "AUTH", "SESSION", 
+                "COOKIE", "KITSU_PWD", "API_KEY", "PRIVATE_KEY", "ACCESS_TOKEN"
+            ],
+        },
+        "log": {
+            "enabled": True,
+            "log_redactions": [
+                {
+                    "pattern": "password=([^\\s&;,\\n]+)",
+                    "replacement": "password=***REDACTED***"
+                },
+                {
+                    "pattern": "token=([a-zA-Z0-9_-]+)",
+                    "replacement": "token=***REDACTED***"
+                },
+                {
+                    "pattern": "secret=([^\\s&;,\\n]+)",
+                    "replacement": "secret=***REDACTED***"
+                },
+                {
+                    "pattern": "api_key=([^\\s&;,\\n]+)",
+                    "replacement": "api_key=***REDACTED***"
+                },
+                {
+                    "pattern": "auth_token=([^\\s&;,\\n]+)",
+                    "replacement": "auth_token=***REDACTED***"
+                },
+            ],
+        },
+    },
     "software_checks": [
         {
             "name": "Photoshop",
