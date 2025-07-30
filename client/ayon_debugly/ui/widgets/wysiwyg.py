@@ -164,27 +164,7 @@ class WysiwygWidget(QtWidgets.QWidget):
         self.editor.setFont(font)
         
         # Set template text as rendered HTML
-        template_markdown = """
-# Problem
----
-   
-**Context & description:** Explain what you were trying to accomplish when the bug occurred
-
-   
-# Expected behavior
----
-   
-**Expected vs. actual behavior:** Clearly distinguish between what you expected to happen and what actually happened.
-   
-   
-   
-# How to reproduce
----
-**Step-by-step reproduction:** List the exact steps someone else would need to follow to encounter the same issue
-
-   
-   
-"""
+        template_markdown = self._get_template_from_settings()
         template_html = simple_markdown_to_html(template_markdown)
         log.debug(f"Template HTML: {template_html}")
         self.editor.setHtml(template_html)
@@ -257,6 +237,41 @@ class WysiwygWidget(QtWidgets.QWidget):
         
         toolbar_layout.addStretch()
         return toolbar
+
+    def _get_template_from_settings(self):
+        """Get the issue template markdown from AYON server settings."""
+        try:
+            import ayon_api
+            from ayon_debugly.version import __version__
+            settings = ayon_api.get_addon_settings("debugly", __version__)
+            if hasattr(settings, "issue_settings") and hasattr(settings.issue_settings, "issue_default_text"):
+                return settings.issue_settings.issue_default_text
+            elif isinstance(settings, dict) and "issue_settings" in settings and "issue_default_text" in settings["issue_settings"]:
+                return settings["issue_settings"]["issue_default_text"]
+        except Exception as e:
+            log.debug(f"Could not load template from settings: {e}")
+        
+        # Fallback to default template
+        return """# Problem
+---
+   
+**Context & description:** Explain what you were trying to accomplish when the bug occurred
+
+   
+# Expected behavior
+---
+   
+**Expected vs. actual behavior:** Clearly distinguish between what you expected to happen and what actually happened.
+   
+   
+   
+# How to reproduce
+---
+**Step-by-step reproduction:** List the exact steps someone else would need to follow to encounter the same issue
+
+   
+   
+"""
 
     def _create_icon_button(self, icon_unicode, tooltip):
         btn = QtWidgets.QPushButton(icon_unicode)

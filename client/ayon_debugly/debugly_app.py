@@ -9,10 +9,10 @@ import ayon_api
 from qtpy import QtCore, QtWidgets
 
 from ayon_debugly.debugly_issue import DebuglyIssue
-from ayon_debugly.endpoints.endpoint_shared_dir import EndpointSharedDir
+from ayon_debugly   .endpoints.endpoint_shared_dir import EndpointSharedDir
 from ayon_debugly.logger import log
 
-from .version import __version__
+from ayon_debugly.version import __version__
 
 
 class DebuglyApp:
@@ -34,16 +34,15 @@ class DebuglyApp:
 
 
 
-    def submit_report(self, title, user_message, attachments=None, screenshot=None, extra_attachments=None):
+    def submit_report(self, title, user_message, attachments=None, screenshot=None, log_files=None, collected_data=None):
         log.info("Submitting report...")
         progress = QtWidgets.QProgressDialog("Submitting report...", None, 0, 0, None)
         progress.setWindowModality(QtCore.Qt.WindowModal)
         progress.show()
         QtWidgets.QApplication.processEvents()
         try:
-            all_attachments = (attachments or []) + (extra_attachments or [])
-            log.info(f"Building DebuglyIssue with {len(all_attachments)} attachments.")
-            issue = DebuglyIssue(title, user_message, {}, all_attachments, screenshot)
+            log.info(f"Building DebuglyIssue with {len(attachments or [])} attachments and {len(log_files or [])} log files.")
+            issue = DebuglyIssue(title, user_message, collected_data or {}, attachments, screenshot, log_files)
             progress.setLabelText("Submitting report...")
             QtWidgets.QApplication.processEvents()
             dest = self.endpoint.submit(issue)
@@ -59,14 +58,17 @@ class DebuglyApp:
             raise
 
     def get_endpoint(self):
-        endpoint_type = getattr(self.settings, "endpoint", "shared_dir")
-        log.info(f"Selecting endpoint: {endpoint_type}")
-        if endpoint_type == "shared_dir":
+        # Check if shared directory endpoint is enabled in settings
+        if (self.settings and 
+            isinstance(self.settings, dict) and
+            "endpoints" in self.settings and
+            "shared_dir" in self.settings["endpoints"] and
+            "shared_dir" in self.settings["endpoints"]["shared_dir"] and
+            "enabled" in self.settings["endpoints"]["shared_dir"]["shared_dir"] and
+            self.settings["endpoints"]["shared_dir"]["shared_dir"]["enabled"]):
+            log.info("Using shared directory endpoint (enabled in settings)")
             return EndpointSharedDir(settings=self.settings)
-        # Add more endpoints as needed
-        # elif endpoint_type == "server":
-        #     return ServerEndpoint()
         else:
-            log.warning(f"Unknown endpoint type: {endpoint_type}, defaulting to SharedDirEndpoint.")
+            log.warning("Shared directory endpoint is disabled or not configured, defaulting to SharedDirEndpoint.")
             return EndpointSharedDir(settings=self.settings)
  

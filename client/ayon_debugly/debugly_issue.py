@@ -5,12 +5,13 @@ import json
 from datetime import datetime
 
 class DebuglyIssue:
-    def __init__(self, title, user_message, collected_data, attachments=None, screenshot=None, timestamp=None):
+    def __init__(self, title, user_message, collected_data, attachments=None, screenshot=None, log_files=None, timestamp=None):
         self.title = title
         self.user_message = user_message
         self.collected_data = collected_data  # dict from collectors
         self.attachments = attachments or []  # list of file paths
         self.screenshot = screenshot  # file path or None
+        self.log_files = log_files or []  # list of log file paths
         self.timestamp = timestamp or datetime.utcnow().isoformat()
 
     def to_dict(self):
@@ -20,6 +21,7 @@ class DebuglyIssue:
             "collected_data": self.collected_data,
             "attachments": self.attachments,
             "screenshot": self.screenshot,
+            "log_files": self.log_files,
             "timestamp": self.timestamp,
         }
 
@@ -31,6 +33,7 @@ class DebuglyIssue:
             collected_data=data.get("collected_data", {}),
             attachments=data.get("attachments", []),
             screenshot=data.get("screenshot"),
+            log_files=data.get("log_files", []),
             timestamp=data.get("timestamp"),
         )
 
@@ -45,6 +48,10 @@ class DebuglyIssue:
                     z.write(f, os.path.join("attachments", os.path.basename(f)))
             if self.screenshot and os.path.exists(self.screenshot):
                 z.write(self.screenshot, os.path.join("screenshot", os.path.basename(self.screenshot)))
+            # Add log files to logs subfolder
+            for log_file in self.log_files:
+                if log_file and os.path.exists(log_file):
+                    z.write(log_file, os.path.join("logs", os.path.basename(log_file)))
         return dest_path
 
     @classmethod

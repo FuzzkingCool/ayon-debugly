@@ -156,26 +156,47 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.statusLabel = QtWidgets.QLabel("Initializing...")
         status_layout.addWidget(self.statusLabel)
         
+        # Add progress bar
+        self.progressBar = QtWidgets.QProgressBar()
+        self.progressBar.setVisible(False)  # Hidden by default
+        self.progressBar.setMinimumWidth(200)
+        self.progressBar.setMaximumWidth(300)
+        status_layout.addWidget(self.progressBar)
+        
         main_layout.addWidget(status_container)
 
     def _setup_collectors_async(self):
         """Setup and run all collectors asynchronously to populate UI widgets and metadata"""
         try:
             self.statusLabel.setText("Collecting system information...")
+            self.progressBar.setVisible(True)
+            self.progressBar.setMinimum(0)
+            self.progressBar.setMaximum(3)  # Logs + Metadata + Complete
+            self.progressBar.setValue(0)
             QtWidgets.QApplication.processEvents()
             
             # Setup logs collector to populate logs widget
+            self.progressBar.setValue(1)
+            self.statusLabel.setText("Collecting log files...")
+            QtWidgets.QApplication.processEvents()
             self._setup_log_list()
             
             # Setup other collectors for metadata
+            self.progressBar.setValue(2)
+            self.statusLabel.setText("Collecting system metadata...")
+            QtWidgets.QApplication.processEvents()
             self._setup_metadata_collectors()
             
+            # Complete
+            self.progressBar.setValue(3)
+            self.progressBar.setVisible(False)
             self.statusLabel.setText("Ready")
             log.info("All collectors completed successfully")
             
         except Exception as e:
             log.error(f"Failed to setup collectors: {e}")
             log.error(traceback.format_exc())
+            self.progressBar.setVisible(False)
             self.statusLabel.setText(f"Error collecting data: {e}")
 
     def _setup_collectors(self):
@@ -194,19 +215,23 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             if "Log" not in friendly_name
         ]
         
-        for collector_name, collector_class in metadata_collectors:
+        # Setup progress bar
+        total_collectors = len(metadata_collectors)
+        self.progressBar.setVisible(True)
+        self.progressBar.setMinimum(0)
+        self.progressBar.setMaximum(total_collectors)
+        self.progressBar.setValue(0)
+        
+        for i, (collector_name, collector_class) in enumerate(metadata_collectors):
             try:
                 self.statusLabel.setText(f"Collecting {collector_name.lower()}...")
+                self.progressBar.setValue(i)
                 QtWidgets.QApplication.processEvents()
                 
                 log.info(f"Running collector: {collector_name}")
                 
-                # Create collector instance with settings if needed
-                if "Production Apps" in collector_name:
-                    collector = collector_class(settings=getattr(self.app, 'settings', None))
-                else:
-                    collector = collector_class()
-                
+                # All collectors now get settings directly from AYON API
+                collector = collector_class()
                 data = collector.collect()
                 
                 # Use the friendly name as the section name
@@ -218,6 +243,10 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 log.error(traceback.format_exc())
                 # Add error info to metadata
                 self.collected_metadata[f"{collector_name}_error"] = str(e)
+        
+        # Complete progress bar
+        self.progressBar.setValue(total_collectors)
+        self.progressBar.setVisible(False)
         
         # Update the collected info widget
         self._update_collected_info_widget()
@@ -471,7 +500,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.logs_header.setObjectName("AccordionHeader")
         self.logs_header.setFixedHeight(32)
         # Font Awesome file-alt icon (fa-file-alt) - more appropriate for logs
-        self.logs_header.setText("📄 Log Files")
+        self.logs_header.setText("📄 Log Files (Auto-included)")
         fa = QFont(self.fontawesome_family, 11)
         fa.setWeight(QtGui.QFont.Black)  # FontAwesome 7 requires Black weight
         self.logs_header.setFont(fa)
@@ -485,6 +514,18 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         content_layout = QtWidgets.QVBoxLayout(self.logs_content)
         content_layout.setContentsMargins(12, 8, 12, 12)
         content_layout.setSpacing(8)
+        
+        # Info label about automatic inclusion
+        info_label = QtWidgets.QLabel("Log files are automatically included in the report. You cannot modify this selection.")
+        info_label.setStyleSheet("""
+            QLabel {
+                color: #888888;
+                font-size: 11px;
+                font-style: italic;
+                padding: 4px 0px;
+            }
+        """)
+        content_layout.addWidget(info_label)
         
         # Log list view
         self.logListView = QtWidgets.QListView()
@@ -697,22 +738,23 @@ class DebuglyMainWindow(QtWidgets.QWidget):
     def _setup_log_list(self):
         """Setup logs collector and populate logs widget"""
         try:
-            # Use the app's settings for the logs collector
-            logs_collector = CollectorLogs(settings=getattr(self.app, 'settings', None))
+            # Logs collector now gets settings directly from AYON API
+            logs_collector = CollectorLogs()
             log_files_data = logs_collector.collect()
             log_files = log_files_data.get("log_files", [])
             
             self.log_model = QtGui.QStandardItemModel(self.logListView)
             for log_file in log_files:
                 item = QtGui.QStandardItem(os.path.basename(log_file["path"]))
-                item.setCheckable(True)
-                item.setCheckState(QtCore.Qt.Checked)
+                # Make logs non-editable - remove checkable property
                 item.setData(log_file["path"], QtCore.Qt.UserRole)
                 # Add tooltip with file info
                 tooltip = f"Path: {log_file['path']}\nSize: {log_file['size']} bytes\nModified: {log_file['mtime']}"
                 item.setToolTip(tooltip)
                 self.log_model.appendRow(item)
             self.logListView.setModel(self.log_model)
+            # Make the list view read-only
+            self.logListView.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
             log.info(f"Loaded {len(log_files)} log files into log list")
         except Exception as e:
             log.error(f"Failed to setup log list: {e}")
@@ -926,45 +968,53 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         try:
             user = getpass.getuser()
             
+            # Setup progress bar for submission
+            self.progressBar.setVisible(True)
+            self.progressBar.setMinimum(0)
+            self.progressBar.setMaximum(3)  # Prepare + Collect logs + Submit
+            self.progressBar.setValue(0)
+            self.statusLabel.setText("Preparing report...")
+            QtWidgets.QApplication.processEvents()
+            
             # Update form model with title
             self.form_model.title = title
             
-            # Create metadata file for submission
-            metadata_file = None
-            if self.collected_metadata:
-                try:
-                    # Create temporary metadata file
-                    metadata_fd, metadata_file = tempfile.mkstemp(suffix=".json", prefix="debugly_metadata_")
-                    os.close(metadata_fd)
-                    with open(metadata_file, 'w', encoding='utf-8') as f:
-                        json.dump(self.collected_metadata, f, indent=2, default=str)
-                    log.info(f"Created metadata file: {metadata_file}")
-                except Exception as e:
-                    log.error(f"Failed to create metadata file: {e}")
-                    metadata_file = None
+            # Prepare attachments (metadata is included in issue.json, not as separate attachment)
+            self.progressBar.setValue(1)
+            self.statusLabel.setText("Preparing attachments...")
+            QtWidgets.QApplication.processEvents()
             
-            # Add metadata file to attachments if created
             all_attachments = attachments.copy()
-            if metadata_file:
-                all_attachments.append(metadata_file)
+
+            # Get all log files as a list of file paths (all logs are included)
+            self.progressBar.setValue(1)
+            self.statusLabel.setText("Collecting log files...")
+            QtWidgets.QApplication.processEvents()
             
-            # Create issue object
-            issue = DebuglyIssue(
-                title=title,
-                user_message=self.form_model.message_markdown,
-                collected_data=self.collected_metadata,
-                attachments=all_attachments
-            )
+            log_files = []
+            if hasattr(self, "log_model") and self.log_model:
+                for row in range(self.log_model.rowCount()):
+                    item = self.log_model.item(row)
+                    if item and item.data(QtCore.Qt.UserRole):
+                        log_files.append(item.data(QtCore.Qt.UserRole))
 
-            log.info(f"Issue: {issue}")
-
+            # Submit the report
+            self.progressBar.setValue(2)
+            self.statusLabel.setText("Submitting report...")
+            QtWidgets.QApplication.processEvents()
+            
             dest = self.app.submit_report(
                 title,
                 self.form_model.message_markdown,
-                getattr(self.form_model, "selected_logs", []),
-                None,  # No separate screenshot path
-                all_attachments,
+                all_attachments,  # attachments parameter
+                None,  # screenshot parameter
+                log_files,  # log_files parameter
+                self.collected_metadata,  # collected_data parameter
             )
+            # Complete submission
+            self.progressBar.setValue(3)
+            self.progressBar.setVisible(False)
+            
             QtWidgets.QMessageBox.information(
                 self, "Report Submitted", f"Report saved to: {dest}"
             )
@@ -972,6 +1022,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 self.statusLabel.setText(f"Report saved to: {dest}")
             log.info(f"Report submitted: {dest}")
         except Exception as e:
+            self.progressBar.setVisible(False)
             QtWidgets.QMessageBox.critical(self, "Submission Failed", str(e))
             if hasattr(self, "statusLabel"):
                 self.statusLabel.setText(f"Error: {e}")
@@ -1070,6 +1121,20 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             
             QListView {{
                 background-color: {MATERIAL_COLORS["surface_container"]};
+                
+            QProgressBar {{
+                background-color: {MATERIAL_COLORS["surface_container"]};
+                border: 1px solid {MATERIAL_COLORS["outline"]};
+                border-radius: {MATERIAL_COLORS["border_radius_m"]};
+                text-align: center;
+                color: {MATERIAL_COLORS["on_surface"]};
+                font-size: 10px;
+            }}
+            
+            QProgressBar::chunk {{
+                background-color: {MATERIAL_COLORS["primary"]};
+                border-radius: {MATERIAL_COLORS["border_radius_m"]};
+            }}
                 border: 1px solid {MATERIAL_COLORS["outline"]};
                 border-radius: {MATERIAL_COLORS["border_radius_m"]};
                 selection-background-color: #4D4D4D;

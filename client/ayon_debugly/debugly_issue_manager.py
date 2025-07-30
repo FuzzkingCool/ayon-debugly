@@ -1,5 +1,5 @@
 import os
-from .debugly_issue import DebuglyIssue
+from ayon_debugly.debugly_issue import DebuglyIssue
 from ayon_debugly.collectors import collector_env, collector_logs, collector_os, collector_system_spec, collector_user
 from ayon_debugly.endpoints.endpoint_shared_dir import EndpointSharedDir
 
@@ -7,12 +7,18 @@ class DebuglyIssueManager:
     def __init__(self, settings=None):
         self.settings = settings
         self.collectors = [
-            collector_env.CollectorEnv(settings=settings),
-            collector_logs.CollectorLogs(settings=settings),
-            collector_os.CollectorOS(settings=settings) if hasattr(collector_os, 'CollectorOS') else collector_os.CollectorOS(),
-            collector_system_spec.CollectorSystemSpec(settings=settings) if hasattr(collector_system_spec, 'CollectorSystemSpec') else collector_system_spec.CollectorSystemSpec(),
-            collector_user.CollectorUser(settings=settings) if hasattr(collector_user, 'CollectorUser') else collector_user.CollectorUser(),
+            collector_env.CollectorEnv(),
+            collector_logs.CollectorLogs(),
+            collector_os.CollectorOS(),
+            collector_system_spec.CollectorSystemSpec(),
+            collector_user.CollectorUser(),
         ]
+        # Add software checks collector if available
+        try:
+            from ayon_debugly.collectors.collector_software_checks import CollectorSoftwareChecks
+            self.collectors.append(CollectorSoftwareChecks())
+        except ImportError:
+            pass
         self.endpoint = EndpointSharedDir(settings=settings)
 
     def collect_data(self):
