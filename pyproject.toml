@@ -1,12 +1,11 @@
 [tool.poetry]
 name = "Debugly"
-version = "0.1.0"
+version = "0.2.2"
 description = "Debugly Addon"
 authors = ["Aleks Berland"]
 license = "MIT License"
-homepage = "https://ayon.ynput.io/"
-documentation = "https://ayon.ynput.io/docs/addon_site_sync_admin"
-repository = "https://github.com/ynput/ayon-sitesync"
+homepage = "https://github.com/FuzzkingCool"
+repository = "https://github.com/FuzzkingCool/ayon-debugly"
 readme = "README.md"
 package-mode = false
 

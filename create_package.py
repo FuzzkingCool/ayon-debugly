@@ -388,7 +388,7 @@ def main(
     """Main entrypoint for package creation."""
     # Get addon details from settings
     addon_name = "debugly"
-    addon_version = "0.1.0"
+    addon_version = ADDON_VERSION
 
     # Create bundle directory
     bundle_dir = os.path.join(
