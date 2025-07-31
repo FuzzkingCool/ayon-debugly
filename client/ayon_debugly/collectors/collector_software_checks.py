@@ -5,6 +5,7 @@ import sys
 import ayon_api
 
 from ayon_debugly.collectors.collector_base import CollectorBase
+from ayon_debugly.logger import log
 
 
 class CollectorSoftwareChecks(CollectorBase):
@@ -17,27 +18,27 @@ class CollectorSoftwareChecks(CollectorBase):
         """Get software checks from AYON server settings."""
         try:
             from ayon_debugly.version import __version__
-            print(f"Loading software checks with version: {__version__}")
+            log.debug(f"Loading software checks with version: {__version__}")
             settings = ayon_api.get_addon_settings("debugly", __version__)
-            print(f"Settings object type: {type(settings)}")
-            print(f"Settings attributes: {[attr for attr in dir(settings) if not attr.startswith('_')]}")
+            log.debug(f"Settings object type: {type(settings)}")
+            log.debug(f"Settings attributes: {[attr for attr in dir(settings) if not attr.startswith('_')]}")
             
             if hasattr(settings, "software_checks"):
                 software_checks = settings.software_checks
-                print(f"[OK] Loaded {len(software_checks)} software checks from AYON settings")
+                log.debug(f"[OK] Loaded {len(software_checks)} software checks from AYON settings")
                 for i, check in enumerate(software_checks):
-                    print(f"  {i+1}. {getattr(check, 'name', 'Unknown')}")
+                    log.debug(f"  {i+1}. {getattr(check, 'name', 'Unknown')}")
                 return software_checks
             elif isinstance(settings, dict) and "software_checks" in settings:
                 software_checks = settings["software_checks"]
-                print(f"[OK] Loaded {len(software_checks)} software checks from AYON settings (dict)")
+                log.debug(f"[OK] Loaded {len(software_checks)} software checks from AYON settings (dict)")
                 for i, check in enumerate(software_checks):
-                    print(f"  {i+1}. {check.get('name', 'Unknown')}")
+                    log.debug(f"  {i+1}. {check.get('name', 'Unknown')}")
                 return software_checks
-            print("[WARN] No software_checks found in AYON settings")
+            log.debug("[WARN] No software_checks found in AYON settings")
             return []
         except Exception as e:
-            print(f"[ERROR] Could not load software checks from AYON settings: {e}")
+            log.debug(f"[ERROR] Could not load software checks from AYON settings: {e}")
             import traceback
             traceback.print_exc()
             return []
@@ -89,7 +90,7 @@ class CollectorSoftwareChecks(CollectorBase):
             else:
                 return self._get_linux_version(exe_path)
         except Exception as e:
-            print(f"[WARN] Could not get version from {exe_path}: {e}")
+            log.debug(f"[WARN] Could not get version from {exe_path}: {e}")
             return None
 
     def _get_windows_version(self, exe_path):
@@ -194,13 +195,13 @@ class CollectorSoftwareChecks(CollectorBase):
                         pass
                     return True, None
         except Exception as e:
-            print(f"[WARN] Error checking running process {exe_name}: {e}")
+            log.debug(f"[WARN] Error checking running process {exe_name}: {e}")
         
         return False, None
 
     def collect(self):
         """Collect software check information."""
-        print("Starting software checks collection...")
+        log.debug("Starting software checks collection...")
         results = []
         
         for sw in self.software_checks:
@@ -230,9 +231,9 @@ class CollectorSoftwareChecks(CollectorBase):
                     exe = plat_obj.get('exe', None)
                     install_path = plat_obj.get('path', None)
             
-            print(f"Checking {name} (platform: {plat})")
-            print(f"  - Executable: {exe}")
-            print(f"  - Install path: {install_path}")
+            log.debug(f"Checking {name} (platform: {plat})")
+            log.debug(f"  - Executable: {exe}")
+            log.debug(f"  - Install path: {install_path}")
             
             # Check if installed
             installed = False
@@ -242,12 +243,12 @@ class CollectorSoftwareChecks(CollectorBase):
             if install_path and exe:
                 installed, actual_exe_path, install_version = self._check_install_path(install_path, exe)
                 if installed:
-                    print(f"  [OK] Installed at: {actual_exe_path}")
-                    print(f"  [OK] Version: {install_version}")
+                    log.debug(f"  [OK] Installed at: {actual_exe_path}")
+                    log.debug(f"  [OK] Version: {install_version}")
                 else:
-                    print(f"  [WARN] Not found at install path: {install_path}")
+                    log.debug(f"  [WARN] Not found at install path: {install_path}")
             else:
-                print("  [WARN] No install path or executable configured")
+                log.debug("  [WARN] No install path or executable configured")
             
             # Check if running
             running = False
@@ -256,13 +257,13 @@ class CollectorSoftwareChecks(CollectorBase):
             if exe:
                 running, running_exe_path = self._check_running_process(exe)
                 if running:
-                    print("  [OK] Currently running")
+                    log.debug("  [OK] Currently running")
                     if running_exe_path:
-                        print(f"  [OK] Running from: {running_exe_path}")
+                        log.debug(f"  [OK] Running from: {running_exe_path}")
                 else:
-                    print("  [WARN] Not currently running")
+                    log.debug("  [WARN] Not currently running")
             else:
-                print("  [WARN] No executable configured for running check")
+                log.debug("  [WARN] No executable configured for running check")
             
             results.append({
                 "name": name,
@@ -276,5 +277,5 @@ class CollectorSoftwareChecks(CollectorBase):
                 "running_exe_path": running_exe_path
             })
         
-        print(f"[OK] Software checks completed: {len(results)} applications checked")
+        log.debug(f"[OK] Software checks completed: {len(results)} applications checked")
         return {"software_checks": results}
