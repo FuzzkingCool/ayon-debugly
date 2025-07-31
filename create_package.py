@@ -396,60 +396,70 @@ def main(
     )
     os.makedirs(bundle_dir, exist_ok=True)
 
+    # Store whether bundle was created in current directory for cleanup
+    bundle_in_current_dir = output_dir is None
+
     log: logging.Logger = logging.getLogger("create_package")
     log.info("Package creation started")
 
-    if not output_dir:
-        output_dir = os.path.join(CURRENT_ROOT, "package")
+    try:
+        if not output_dir:
+            output_dir = os.path.join(CURRENT_ROOT, "package")
 
-    has_client_code = bool(ADDON_CLIENT_DIR)
-    if has_client_code:
-        client_dir: str = os.path.join(CLIENT_ROOT, ADDON_CLIENT_DIR)
-        if not os.path.exists(client_dir):
-            raise RuntimeError(
-                f"Client directory was not found '{client_dir}'."
-                " Please check 'client_dir' in 'package.py'."
-            )
-        update_client_version(log)
-
-    if only_client:
-        if not has_client_code:
-            raise RuntimeError("Client code is not available. Skipping")
-
-        copy_client_code(output_dir, log)
-        return
-
-    log.info(f"Preparing package for {ADDON_NAME}-{ADDON_VERSION}")
-
-    if os.path.exists(FRONTEND_ROOT):
-        build_frontend()
-
-    files_mapping: List[FileMapping] = []
-    files_mapping.extend(get_base_files_mapping())
-
-    if has_client_code:
-        files_mapping.append(
-            (get_client_zip_content(log), "private/client.zip")
-        )
-
-    # Skip server zipping
-    if skip_zip:
-        copy_addon_package(output_dir, files_mapping, log)
-    else:
-        create_addon_package(output_dir, files_mapping, log)
-
-    # Copy client files to bundle
-    if os.path.isdir("client"):
-        bundle_client_dir = os.path.join(bundle_dir, "client")
-        os.makedirs(bundle_client_dir, exist_ok=True)
-        for root, _, filenames in os.walk("client"):
-            for filename in filenames:
-                src = os.path.join(root, filename)
-                dst = os.path.join(
-                    bundle_client_dir, os.path.relpath(src, "client")
+        has_client_code = bool(ADDON_CLIENT_DIR)
+        if has_client_code:
+            client_dir: str = os.path.join(CLIENT_ROOT, ADDON_CLIENT_DIR)
+            if not os.path.exists(client_dir):
+                raise RuntimeError(
+                    f"Client directory was not found '{client_dir}'."
+                    " Please check 'client_dir' in 'package.py'."
                 )
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
+            update_client_version(log)
+
+        if only_client:
+            if not has_client_code:
+                raise RuntimeError("Client code is not available. Skipping")
+
+            copy_client_code(output_dir, log)
+            return
+
+        log.info(f"Preparing package for {ADDON_NAME}-{ADDON_VERSION}")
+
+        if os.path.exists(FRONTEND_ROOT):
+            build_frontend()
+
+        files_mapping: List[FileMapping] = []
+        files_mapping.extend(get_base_files_mapping())
+
+        if has_client_code:
+            files_mapping.append(
+                (get_client_zip_content(log), "private/client.zip")
+            )
+
+        # Skip server zipping
+        if skip_zip:
+            copy_addon_package(output_dir, files_mapping, log)
+        else:
+            create_addon_package(output_dir, files_mapping, log)
+
+        # Copy client files to bundle
+        if os.path.isdir("client"):
+            bundle_client_dir = os.path.join(bundle_dir, "client")
+            os.makedirs(bundle_client_dir, exist_ok=True)
+            for root, _, filenames in os.walk("client"):
+                for filename in filenames:
+                    src = os.path.join(root, filename)
+                    dst = os.path.join(
+                        bundle_client_dir, os.path.relpath(src, "client")
+                    )
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+
+    finally:
+        # Clean up bundle directory if it was created in current directory
+        if bundle_in_current_dir and os.path.exists(bundle_dir):
+            log.info(f"Cleaning up temporary bundle directory: {bundle_dir}")
+            shutil.rmtree(bundle_dir)
 
     log.info("Package creation finished")
 
