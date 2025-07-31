@@ -16,7 +16,7 @@ class SharedDirectoryConfig(BaseSettingsModel):
         description="Shared Directory for issue on Windows.",
     )
     macos: str = SettingsField(
-        default="/Volumes/Pipeline/ayon_issues",
+        default="/Volumes/Projects/Pipeline/ayon_issues",
         title="macOS",
         description="Shared Directory for issue on macOS.",
     )
@@ -98,39 +98,63 @@ class LogRedactionEntry(BaseSettingsModel):
     )
 
 
-class SoftwarePlatformCheck(BaseSettingsModel):
-    _layout = "expanded"
+class SoftwarePlatformCheckWindows(BaseSettingsModel):
     exe: str = SettingsField(
         default="",
-        title="Executable Name",
-        description="Executable name for this platform (e.g. Photoshop.exe, Unity, harmony)",
+        title="Windows Executable Name",
+        description="Executable name for Windows (e.g. Photoshop.exe, Unity.exe, Harmony.exe)",
     )
     path: str = SettingsField(
         default="",
-        title="Install Path",
-        description="Installation folder for this platform.",
+        title="Windows Install Path",
+        description="Installation folder for Windows.",
+    )
+
+
+class SoftwarePlatformCheckMacOS(BaseSettingsModel):
+    exe: str = SettingsField(
+        default="",
+        title="macOS Executable Name",
+        description="Executable name for macOS (e.g. Adobe Photoshop, Unity, Harmony.app)",
+    )
+    path: str = SettingsField(
+        default="",
+        title="macOS Install Path",
+        description="Installation folder for macOS.",
+    )
+
+
+class SoftwarePlatformCheckLinux(BaseSettingsModel):
+    exe: str = SettingsField(
+        default="",
+        title="Linux Executable Name",
+        description="Executable name for Linux (e.g. photoshop, unity-editor, harmony)",
+    )
+    path: str = SettingsField(
+        default="",
+        title="Linux Install Path",
+        description="Installation folder for Linux.",
     )
 
 
 class SoftwareCheckEntry(BaseSettingsModel):
-    _layout = "expanded"
     name: str = SettingsField(
         "",
         title="Software Name",
         description="Display name of the software (e.g. Photoshop)",
     )
-    windows: SoftwarePlatformCheck = SettingsField(
-        default_factory=SoftwarePlatformCheck,
+    windows: SoftwarePlatformCheckWindows = SettingsField(
+        default_factory=SoftwarePlatformCheckWindows,
         title="Windows",
         description="Windows-specific executable and install path.",
     )
-    macos: SoftwarePlatformCheck = SettingsField(
-        default_factory=SoftwarePlatformCheck,
+    macos: SoftwarePlatformCheckMacOS = SettingsField(
+        default_factory=SoftwarePlatformCheckMacOS,
         title="macOS",
         description="macOS-specific executable and install path.",
     )
-    linux: SoftwarePlatformCheck = SettingsField(
-        default_factory=SoftwarePlatformCheck,
+    linux: SoftwarePlatformCheckLinux = SettingsField(
+        default_factory=SoftwarePlatformCheckLinux,
         title="Linux",
         description="Linux-specific executable and install path.",
     )
@@ -343,40 +367,40 @@ class DebuglySettings(BaseSettingsModel):
     software_checks: List[SoftwareCheckEntry] = SettingsField(
         default_factory=lambda: [
             SoftwareCheckEntry(
-                name="Photoshop",
-                windows=SoftwarePlatformCheck(
+                name="Photoshop 2025",
+                windows=SoftwarePlatformCheckWindows(
                     exe="Photoshop.exe",
-                    path="C:\\Program Files\\Adobe\\Adobe Photoshop 2024",
+                    path="C:\\Program Files\\Adobe\\Adobe Photoshop 2025",
                 ),
-                macos=SoftwarePlatformCheck(
+                macos=SoftwarePlatformCheckMacOS(
                     exe="Adobe Photoshop",
-                    path="/Applications/Adobe Photoshop 2024",
+                    path="/Applications/Adobe Photoshop 2025",
                 ),
-                linux=SoftwarePlatformCheck(exe="", path=""),
+                linux=SoftwarePlatformCheckLinux(exe="", path=""),
             ),
             SoftwareCheckEntry(
-                name="Unity",
-                windows=SoftwarePlatformCheck(
-                    exe="Unity.exe", path="C:\\Program Files\\Unity\\Editor"
+                name="Unity 2021.3.5f1",
+                windows=SoftwarePlatformCheckWindows(
+                    exe="Unity.exe", path="C:\\Program Files\\Unity\\Editor\\2021.3.5f1"
                 ),
-                macos=SoftwarePlatformCheck(
-                    exe="Unity", path="/Applications/Unity/Hub/Editor"
+                macos=SoftwarePlatformCheckMacOS(
+                    exe="Unity", path="/Applications/Unity/Hub/Editor/"
                 ),
-                linux=SoftwarePlatformCheck(
+                linux=SoftwarePlatformCheckLinux(
                     exe="unity-editor", path="/opt/Unity/Editor"
                 ),
             ),
             SoftwareCheckEntry(
-                name="Harmony",
-                windows=SoftwarePlatformCheck(
+                name="Harmony 24",
+                windows=SoftwarePlatformCheckWindows(
                     exe="Harmony.exe",
-                    path="C:\\Program Files\\Toon Boom Animation\\Harmony",
+                    path="C:\\Program Files (x86)\\Toon Boom Animation\\Toon Boom Harmony 24 Premium",
                 ),
-                macos=SoftwarePlatformCheck(
+                macos=SoftwarePlatformCheckMacOS(
                     exe="Harmony.app",
-                    path="/Applications/Toon Boom Harmony 22",
+                    path="/Applications/Toon Boom Harmony 24",
                 ),
-                linux=SoftwarePlatformCheck(
+                linux=SoftwarePlatformCheckLinux(
                     exe="harmony", path="/opt/Harmony"
                 ),
             ),
@@ -423,7 +447,7 @@ DEFAULT_DEBUGLY_SETTINGS = {
             "shared_dir": {
                 "enabled": True,
                 "windows": "P:\\Pipeline\\ayon_issues",
-                "macos": "/Volumes/Pipeline/ayon_issues",
+                "macos": "/Volumes/Projects/Pipeline/ayon_issues",
                 "linux": "/mnt/Pipeline/ayon_issues",
             },
         },
@@ -491,38 +515,38 @@ DEFAULT_DEBUGLY_SETTINGS = {
     },
     "software_checks": [
         {
-            "name": "Photoshop",
+            "name": "Photoshop 2025",
             "windows": {
                 "exe": "Photoshop.exe",
-                "path": "C:\\Program Files\\Adobe\\Adobe Photoshop 2024",
+                "path": "C:\\Program Files\\Adobe\\Adobe Photoshop 2025",
             },
             "macos": {
                 "exe": "Adobe Photoshop",
-                "path": "/Applications/Adobe Photoshop 2024",
+                "path": "/Applications/Adobe Photoshop 2025",
             },
             "linux": {"exe": "", "path": ""},
         },
         {
-            "name": "Unity",
+            "name": "Unity 2021.3.5f1",
             "windows": {
                 "exe": "Unity.exe",
-                "path": "C:\\Program Files\\Unity\\Editor",
+                "path": "C:\\Program Files\\Unity\\Editor\\2021.3.5f1",
             },
             "macos": {
                 "exe": "Unity",
-                "path": "/Applications/Unity/Hub/Editor",
+                "path": "/Applications/Unity/Hub/Editor/",
             },
             "linux": {"exe": "unity-editor", "path": "/opt/Unity/Editor"},
         },
         {
-            "name": "Harmony",
+            "name": "Harmony 24",
             "windows": {
                 "exe": "Harmony.exe",
-                "path": "C:\\Program Files\\Toon Boom Animation\\Harmony",
+                "path": "C:\\Program Files (x86)\\Toon Boom Animation\\Toon Boom Harmony 24 Premium",
             },
             "macos": {
                 "exe": "Harmony.app",
-                "path": "/Applications/Toon Boom Harmony 22",
+                "path": "/Applications/Toon Boom Harmony 24",
             },
             "linux": {"exe": "harmony", "path": "/opt/Harmony"},
         },
