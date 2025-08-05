@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 class IssueFormModel:
     def __init__(self):
         self.title = ""

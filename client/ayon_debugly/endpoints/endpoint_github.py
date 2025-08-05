@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 from ayon_debugly.endpoints.endpoint_base import EndpointBase
 import requests
 import os
 
-class GitHubEndpoint(EndpointBase):
+class EndpointGitHub(EndpointBase):
     def initialize(self):
         self.token = os.environ["GITHUB_TOKEN"]
         self.repo = os.environ["GITHUB_REPO"]

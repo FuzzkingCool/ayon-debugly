@@ -1,8 +1,17 @@
 import os
+
+from ayon_debugly.collectors import (
+    collector_env,
+    collector_logs,
+    collector_os,
+    collector_system_spec,
+    collector_user,
+)
 from ayon_debugly.debugly_issue import DebuglyIssue
-from ayon_debugly.collectors import collector_env, collector_logs, collector_os, collector_system_spec, collector_user
-from ayon_debugly.endpoints.endpoint_shared_dir import EndpointSharedDir
-from ayon_debugly.endpoints.endpoint_notion import NotionEndpoint
+from ayon_debugly.endpoints.endpoint_notion import EndpointNotion
+from ayon_debugly.endpoints.endpoint_shared_folder import EndpointSharedFolder
+from ayon_debugly.logger import log
+
 
 class DebuglyIssueManager:
     def __init__(self, settings=None):
@@ -16,7 +25,9 @@ class DebuglyIssueManager:
         ]
         # Add software checks collector if available
         try:
-            from ayon_debugly.collectors.collector_software_checks import CollectorSoftwareChecks
+            from ayon_debugly.collectors.collector_software_checks import (
+                CollectorSoftwareChecks,
+            )
             self.collectors.append(CollectorSoftwareChecks())
         except ImportError:
             pass
@@ -24,17 +35,28 @@ class DebuglyIssueManager:
         # Initialize endpoints based on settings
         self.endpoints = []
         
-        # Always add shared directory endpoint as fallback
-        self.endpoints.append(EndpointSharedDir(settings=settings))
+        # Add Shared Folder endpoint if enabled
+        try:
+            shared_folder_endpoint = EndpointSharedFolder(settings=settings)
+            self.endpoints.append(shared_folder_endpoint)
+            log.info("Shared Folder endpoint initialized successfully")
+        except Exception as e:
+            log.warning(f"Shared Folder endpoint not available: {e}")
         
         # Add Notion endpoint if enabled
         try:
-            notion_endpoint = NotionEndpoint()
-            notion_endpoint.initialize()
+            notion_endpoint = EndpointNotion()
+            notion_endpoint.initialize(settings=settings)
             self.endpoints.append(notion_endpoint)
+            log.info("Notion endpoint initialized successfully")
         except Exception as e:
-            # Notion endpoint not available or not configured
-            pass
+            log.warning(f"Notion endpoint not available: {e}")
+        
+        # Check if we have any endpoints configured
+        if not self.endpoints:
+            log.error("WARNING: No endpoints are configured or enabled! Speak to your administrator.")
+        else:
+            log.info(f"Initialized {len(self.endpoints)} endpoint(s)")
 
     def collect_data(self):
         data = {}
@@ -42,32 +64,67 @@ class DebuglyIssueManager:
             data.update(collector.collect())
         return data
 
-    def submit_report(self, title, user_message, attachments=None, screenshot=None):
-        collected_data = self.collect_data()
-        issue = DebuglyIssue(title, user_message, collected_data, attachments, screenshot)
+    def submit_report(self, title, user_message, attachments=None, screenshot=None, log_files=None, collected_data=None):
+        # Check if we have any endpoints configured
+        if not self.endpoints:
+            raise Exception("No endpoints are configured or enabled. Please check your settings.")
+        
+        # Use provided collected_data or collect it if not provided
+        if collected_data is None:
+            collected_data = self.collect_data()
+        
+        issue = DebuglyIssue(title, user_message, collected_data, attachments, screenshot, log_files)
         
         results = []
-        for endpoint in self.endpoints:
-            try:
-                result = endpoint.submit(issue)
-                results.append(result)
-            except Exception as e:
-                # Log error but continue with other endpoints
-                print(f"Failed to submit to {endpoint.__class__.__name__}: {e}")
+        endpoint_results = []  # Track endpoint and result pairs
+        failed_endpoints = []
         
-        return results
+        try:
+            for endpoint in self.endpoints:
+                try:
+                    result = endpoint.submit(issue)
+                    results.append(result)
+                    endpoint_results.append((endpoint, result))
+                    log.info(f"Successfully submitted to {endpoint.__class__.__name__}")
+                except Exception as e:
+                    failed_endpoints.append(f"{endpoint.__class__.__name__}: {e}")
+                    log.error(f"Failed to submit to {endpoint.__class__.__name__}: {e}")
+            
+            # If all endpoints failed, raise an exception
+            if not results and failed_endpoints:
+                error_msg = "Failed to submit to all endpoints:\n" + "\n".join(failed_endpoints)
+                raise Exception(error_msg)
+            
+            # If some endpoints failed, log a warning but return successful results
+            if failed_endpoints:
+                log.warning(f"Some endpoints failed, but {len(results)} submissions succeeded")
+            
+            return endpoint_results
+        finally:
+            # Always cleanup temporary files
+            try:
+                issue.cleanup()
+            except Exception as e:
+                log.warning(f"Failed to cleanup issue temporary files: {e}")
+            
+            # Cleanup endpoint temporary files
+            for endpoint in self.endpoints:
+                try:
+                    endpoint.cleanup_temp_files()
+                except Exception as e:
+                    log.warning(f"Failed to cleanup {endpoint.__class__.__name__} temporary files: {e}")
 
     def list_issues(self):
-        """List all issues in the shared dir, returning their metadata."""
+        """List all issues in the shared folder, returning their metadata."""
         issues = []
-        # Use the first shared directory endpoint for listing
-        shared_dir_endpoint = next((ep for ep in self.endpoints if isinstance(ep, EndpointSharedDir)), None)
-        if shared_dir_endpoint:
-            shared_dir = shared_dir_endpoint.shared_dir
-            for fname in os.listdir(shared_dir):
+        # Use the first Shared Folder endpoint for listing
+        shared_folder_endpoint = next((ep for ep in self.endpoints if isinstance(ep, EndpointSharedFolder)), None)
+        if shared_folder_endpoint:
+            shared_folder = shared_folder_endpoint.shared_folder
+            for fname in os.listdir(shared_folder):
                 if fname.endswith(".zip"):
                     try:
-                        zip_path = os.path.join(shared_dir, fname)
+                        zip_path = os.path.join(shared_folder, fname)
                         issue = DebuglyIssue.from_zip(zip_path)
                         issues.append(issue)
                     except Exception:

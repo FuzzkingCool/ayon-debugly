@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from ayon_debugly.collectors.collector_base import CollectorBase
 import platform
 import socket

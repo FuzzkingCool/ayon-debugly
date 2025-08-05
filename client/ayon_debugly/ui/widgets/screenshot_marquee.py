@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import sys
 import tempfile
 
@@ -145,4 +146,14 @@ class ScreenMarquee(QtWidgets.QWidget):
                                            marquee.selection_rect.width(), marquee.selection_rect.height())
         tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
         cropped.save(tmpfile.name, "PNG")
-        return tmpfile.name 
+        return tmpfile.name
+
+    @staticmethod
+    def cleanup_temp_file(file_path):
+        """Clean up a temporary screenshot file"""
+        import os
+        if file_path and os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except OSError:
+                pass  # Ignore errors during cleanup 

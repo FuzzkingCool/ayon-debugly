@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import zipfile
 import tempfile
@@ -13,6 +14,23 @@ class DebuglyIssue:
         self.screenshot = screenshot  # file path or None
         self.log_files = log_files or []  # list of log file paths
         self.timestamp = timestamp or datetime.utcnow().isoformat()
+        
+        # Track temporary files for cleanup
+        self._temp_files = []
+        
+        # Create a separate JSON file for collected data
+        self.collected_data_file = self._create_collected_data_file()
+
+    def _create_collected_data_file(self):
+        """Create a temporary JSON file containing the collected data"""
+        if not self.collected_data:
+            return None
+        
+        # Create a temporary file for the collected data (text mode)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json", prefix="debugly_collected_data_", mode='w', encoding='utf-8')
+        json.dump(self.collected_data, tmp, indent=2)
+        tmp.close()
+        return tmp.name
 
     def to_dict(self):
         return {
@@ -43,16 +61,47 @@ class DebuglyIssue:
             dest_path = tmp.name
         with zipfile.ZipFile(dest_path, "w") as z:
             z.writestr("issue.json", json.dumps(self.to_dict(), indent=2))
+            
+            # Add collected data file
+            if self.collected_data_file and os.path.exists(self.collected_data_file):
+                z.write(self.collected_data_file, "collected_data.json")
+            
             for f in self.attachments:
                 if f and os.path.exists(f):
                     z.write(f, os.path.join("attachments", os.path.basename(f)))
             if self.screenshot and os.path.exists(self.screenshot):
                 z.write(self.screenshot, os.path.join("screenshot", os.path.basename(self.screenshot)))
-            # Add log files to logs subfolder
+            
+            # Add redacted log files to logs subfolder
+            from ayon_debugly.collectors.collector_base import redact_log_content
             for log_file in self.log_files:
                 if log_file and os.path.exists(log_file):
-                    z.write(log_file, os.path.join("logs", os.path.basename(log_file)))
+                    try:
+                        # Read and redact the log file
+                        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        redacted_content = redact_log_content(content)
+                        
+                        # Add redacted content to ZIP
+                        base_name = os.path.basename(log_file)
+                        name, ext = os.path.splitext(base_name)
+                        redacted_name = f"{name}_redacted{ext}"
+                        z.writestr(os.path.join("logs", redacted_name), redacted_content)
+                    except Exception as e:
+                        # If redaction fails, skip this file for safety
+                        continue
         return dest_path
+
+    def cleanup(self):
+        """Clean up temporary files created by this issue"""
+        for temp_file in self._temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except OSError:
+                pass  # Ignore errors during cleanup
+        
+        self._temp_files.clear()
 
     @classmethod
     def from_zip(cls, zip_path):

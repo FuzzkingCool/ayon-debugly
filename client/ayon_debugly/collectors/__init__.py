@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Dynamic collector discovery and registration system.
 Automatically discovers all collectors in this folder and provides a clean interface.

@@ -1,5 +1,5 @@
+# -*- coding: utf-8 -*-
 import getpass
-import json
 import os
 import tempfile
 import traceback
@@ -10,12 +10,12 @@ from qtpy.QtGui import QFont
 from ayon_debugly.collectors import get_collector_pairs
 from ayon_debugly.collectors.collector_logs import CollectorLogs
 from ayon_debugly.debugly_app import DebuglyApp
-from ayon_debugly.debugly_issue import DebuglyIssue
 from ayon_debugly.logger import log
 from ayon_debugly.models.issue_form_model import IssueFormModel
 from ayon_debugly.ui.widgets.attachment_list import AttachmentListWidget
 from ayon_debugly.ui.widgets.widget_upload import UploadWidget
 from ayon_debugly.ui.widgets.wysiwyg import WysiwygWidget
+from ayon_debugly.ui.dialogs import show_success_dialog
 
 MATERIAL_COLORS = {
     "primary": "#E0E0E0",
@@ -802,7 +802,6 @@ class DebuglyMainWindow(QtWidgets.QWidget):
     def _generate_screenshot_name(self, base_name="issue"):
         """Generate a unique screenshot filename"""
         import os
-        import tempfile
         
         # Get title for naming
         title = self.title_edit.text().strip()
@@ -1003,7 +1002,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.statusLabel.setText("Submitting report...")
             QtWidgets.QApplication.processEvents()
             
-            dest = self.app.submit_report(
+            results = self.app.submit_report(
                 title,
                 self.form_model.message_markdown,
                 all_attachments,  # attachments parameter
@@ -1015,12 +1014,12 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.progressBar.setValue(3)
             self.progressBar.setVisible(False)
             
-            QtWidgets.QMessageBox.information(
-                self, "Report Submitted", f"Report saved to: {dest}"
-            )
+            # Show success dialog with endpoint-specific information
+            show_success_dialog(results, self)
+            
             if hasattr(self, "statusLabel"):
-                self.statusLabel.setText(f"Report saved to: {dest}")
-            log.info(f"Report submitted: {dest}")
+                self.statusLabel.setText(f"Report submitted to {len(results)} endpoint(s)")
+            log.info(f"Report submitted to {len(results)} endpoint(s)")
         except Exception as e:
             self.progressBar.setVisible(False)
             QtWidgets.QMessageBox.critical(self, "Submission Failed", str(e))
@@ -1028,6 +1027,13 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 self.statusLabel.setText(f"Error: {e}")
             log.error(f"Submission failed: {e}")
             log.error(traceback.format_exc())
+        finally:
+            # Cleanup temporary files from UI components
+            try:
+                if hasattr(self, 'screenshot_widget'):
+                    self.screenshot_widget.cleanup()
+            except Exception as e:
+                log.warning(f"Failed to cleanup screenshot widget: {e}")
     def apply_material_theme(self):
         self.setStyleSheet(f"""
             QWidget {{
@@ -1570,5 +1576,14 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.screenshot_header.setObjectName("AccordionHeaderExpanded")
         self.screenshot_header.style().unpolish(self.screenshot_header)
         self.screenshot_header.style().polish(self.screenshot_header)
+
+    def closeEvent(self, event):
+        """Clean up temporary files when window is closed"""
+        try:
+            if hasattr(self, 'screenshot_widget'):
+                self.screenshot_widget.cleanup()
+        except Exception as e:
+            log.warning(f"Failed to cleanup during window close: {e}")
+        super().closeEvent(event)
 
 

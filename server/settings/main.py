@@ -4,22 +4,22 @@ from ayon_server.settings import BaseSettingsModel, SettingsField # type: ignore
 from ayon_server.settings.enum import secrets_enum
 
 
-class SharedDirectoryConfig(BaseSettingsModel):
+class SharedFolderConfig(BaseSettingsModel):
     _layout = "expanded"
     windows: str = SettingsField(
         default="P:\\Pipeline\\ayon_issues",
         title="Windows",
-        description="Shared Directory for issue on Windows.",
+        description="Shared Folderectory for issue on Windows.",
     )
     macos: str = SettingsField(
         default="/Volumes/Projects/Pipeline/ayon_issues",
         title="macOS",
-        description="Shared Directory for issue on macOS.",
+        description="Shared Folderectory for issue on macOS.",
     )
     linux: str = SettingsField(
         default="/mnt/Pipeline/ayon_issues",
         title="Linux",
-        description="Shared Directory for reports on Linux.",
+        description="Shared Folderectory for reports on Linux.",
     )
 
 
@@ -195,18 +195,18 @@ class NotionSettings(BaseSettingsModel):
     )
 
 
-class SharedDirSettings(BaseSettingsModel):
-    """Shared directory endpoint configuration."""
+class SharedFolderSettings(BaseSettingsModel):
+    """Shared Folder endpoint configuration."""
     
     enabled: bool = SettingsField(
         default=True,
         title="Enabled",
-        description="Enable or disable shared directory endpoint.",
+        description="Enable or disable Shared Folder endpoint.",
     )
     
-    shared_dir: SharedDirectoryConfig = SettingsField(
-        default_factory=SharedDirectoryConfig,
-        title="Shared Directory",
+    shared_folder: SharedFolderConfig = SettingsField(
+        default_factory=SharedFolderConfig,
+        title="Shared Folder",
         description="Directory where user reports will be stored, per platform.",
     )
 
@@ -220,10 +220,10 @@ class EndpointsSettings(BaseSettingsModel):
         description="Notion endpoint for creating issue reports.",
     )
     
-    shared_dir: SharedDirSettings = SettingsField(
-        default_factory=SharedDirSettings,
-        title="Shared Dir",
-        description="Shared directory endpoint for storing issue reports.",
+    shared_folder: SharedFolderSettings = SettingsField(
+        default_factory=SharedFolderSettings,
+        title="Shared Folder",
+        description="Shared Folder endpoint for storing issue reports.",
     )
 
 
@@ -498,9 +498,9 @@ DEFAULT_DEBUGLY_SETTINGS = {
                 "assignee_id": "",
             },
         },
-        "shared_dir": {
+        "shared_folder": {
             "enabled": True,
-            "shared_dir": {
+            "shared_folder": {
                 "windows": "P:\\Pipeline\\ayon_issues",
                 "macos": "/Volumes/Projects/Pipeline/ayon_issues",
                 "linux": "/mnt/Pipeline/ayon_issues",

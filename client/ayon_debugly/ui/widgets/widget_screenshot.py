@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import tempfile
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -55,3 +56,13 @@ class ScreenshotWidget(QtWidgets.QWidget):
         else:
             self.preview_label.setText("Failed to load screenshot")
             self.screenshot_path = None
+
+    def cleanup(self):
+        """Clean up temporary screenshot files"""
+        import os
+        if self.screenshot_path and os.path.exists(self.screenshot_path):
+            try:
+                os.unlink(self.screenshot_path)
+                self.screenshot_path = None
+            except OSError:
+                pass  # Ignore errors during cleanup

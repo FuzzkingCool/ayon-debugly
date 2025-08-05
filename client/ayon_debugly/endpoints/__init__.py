@@ -1,11 +1,13 @@
+# -*- coding: utf-8 -*-
 from .endpoint_base import EndpointBase
-from .endpoint_github import GitHubEndpoint
-from .endpoint_notion import NotionEndpoint
-from .endpoint_shared_dir import SharedDirectoryEndpoint
+from .endpoint_github import EndpointGitHub
+from .endpoint_notion import EndpointNotion
+from .endpoint_shared_folder import EndpointSharedFolder
 
 __all__ = [
     "EndpointBase",
-    "GitHubEndpoint", 
-    "NotionEndpoint",
-    "SharedDirectoryEndpoint"
+    "EndpointJira",
+    "EndpointGitHub", 
+    "EndpointNotion",
+    "EndpointSharedFolder"
 ] 

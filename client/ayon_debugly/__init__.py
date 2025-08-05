@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import traceback
 try:
     from ayon_debugly.logger import log

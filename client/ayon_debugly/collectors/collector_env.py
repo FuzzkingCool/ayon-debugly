@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from ayon_debugly.collectors.collector_base import CollectorBase, redact_dict
 import os
 import sys

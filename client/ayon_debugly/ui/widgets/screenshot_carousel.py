@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from qtpy import QtWidgets, QtCore, QtGui
 import os
 from ayon_debugly.logger import log
