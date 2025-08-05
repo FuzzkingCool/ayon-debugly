@@ -24,20 +24,20 @@ class EndpointSharedDir(EndpointBase):
         shared_dir = None
         if self.settings and hasattr(self.settings, "endpoints") and hasattr(self.settings.endpoints, "shared_dir"):
             log.debug("Using object-based settings")
-            shared_dir_obj = self.settings.endpoints.shared_dir.shared_dir
-            # Check if shared directory is enabled
-            if hasattr(shared_dir_obj, "enabled") and not shared_dir_obj.enabled:
+            # Check if shared directory is enabled at section level
+            if hasattr(self.settings.endpoints.shared_dir, "enabled") and not self.settings.endpoints.shared_dir.enabled:
                 raise Exception("Shared directory endpoint is disabled in settings")
+            shared_dir_obj = self.settings.endpoints.shared_dir.shared_dir
             shared_dir = getattr(shared_dir_obj, plat, None)
         elif (self.settings and isinstance(self.settings, dict) and 
               "endpoints" in self.settings and 
               "shared_dir" in self.settings["endpoints"] and
               "shared_dir" in self.settings["endpoints"]["shared_dir"]):
             log.debug("Using dict-based settings")
-            shared_dir_obj = self.settings["endpoints"]["shared_dir"]["shared_dir"]
-            # Check if shared directory is enabled
-            if "enabled" in shared_dir_obj and not shared_dir_obj["enabled"]:
+            # Check if shared directory is enabled at section level
+            if "enabled" in self.settings["endpoints"]["shared_dir"] and not self.settings["endpoints"]["shared_dir"]["enabled"]:
                 raise Exception("Shared directory endpoint is disabled in settings")
+            shared_dir_obj = self.settings["endpoints"]["shared_dir"]["shared_dir"]
             shared_dir = shared_dir_obj.get(plat, None)
         if not shared_dir:
             shared_dir = os.path.expanduser("~/ayon_reports")
@@ -130,9 +130,10 @@ class EndpointSharedDir(EndpointBase):
             if (hasattr(settings, "endpoints") and 
                 hasattr(settings.endpoints, "shared_dir") and
                 hasattr(settings.endpoints.shared_dir, "shared_dir")):
-                shared_dir_obj = settings.endpoints.shared_dir.shared_dir
-                if hasattr(shared_dir_obj, "enabled") and not shared_dir_obj.enabled:
+                # Check if shared directory is enabled at section level
+                if hasattr(settings.endpoints.shared_dir, "enabled") and not settings.endpoints.shared_dir.enabled:
                     raise Exception("Shared directory endpoint is disabled in settings")
+                shared_dir_obj = settings.endpoints.shared_dir.shared_dir
                 shared_dir = getattr(shared_dir_obj, _platform, "~/ayon_reports")
                 return os.path.expanduser(shared_dir)
             else:

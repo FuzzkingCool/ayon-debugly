@@ -1,15 +1,11 @@
 
 from typing import List
 from ayon_server.settings import BaseSettingsModel, SettingsField # type: ignore
+from ayon_server.settings.enum import secrets_enum
 
 
 class SharedDirectoryConfig(BaseSettingsModel):
     _layout = "expanded"
-    enabled: bool = SettingsField(
-        default=True,
-        title="Enabled",
-        description="Enable or disable shared directory endpoint.",
-    )
     windows: str = SettingsField(
         default="P:\\Pipeline\\ayon_issues",
         title="Windows",
@@ -160,8 +156,53 @@ class SoftwareCheckEntry(BaseSettingsModel):
     )
 
 
+class NotionConfig(BaseSettingsModel):
+    _layout = "expanded"
+    database_id: str = SettingsField(
+        default="",
+        title="Database ID",
+        description="Notion database ID where issues will be created.",
+        scope=["studio"],
+    )
+    api_key: str = SettingsField(
+        default="notion_debugly",
+        enum_resolver=secrets_enum,
+        title="API Key",
+        description="Notion API key for authentication.",
+        scope=["studio"],
+    )
+    assignee_id: str = SettingsField(
+        default="",
+        title="Assignee ID",
+        description="Notion user ID to assign issues to (optional).",
+        scope=["studio"],
+    )
+
+
+class NotionSettings(BaseSettingsModel):
+    """Notion endpoint configuration."""
+    
+    enabled: bool = SettingsField(
+        default=True,
+        title="Enabled",
+        description="Enable or disable Notion endpoint.",
+    )
+    
+    notion: NotionConfig = SettingsField(
+        default_factory=NotionConfig,
+        title="Notion",
+        description="Notion endpoint for creating issue reports.",
+    )
+
+
 class SharedDirSettings(BaseSettingsModel):
     """Shared directory endpoint configuration."""
+    
+    enabled: bool = SettingsField(
+        default=True,
+        title="Enabled",
+        description="Enable or disable shared directory endpoint.",
+    )
     
     shared_dir: SharedDirectoryConfig = SettingsField(
         default_factory=SharedDirectoryConfig,
@@ -172,6 +213,12 @@ class SharedDirSettings(BaseSettingsModel):
 
 class EndpointsSettings(BaseSettingsModel):
     """Endpoints configuration."""
+    
+    notion: NotionSettings = SettingsField(
+        default_factory=NotionSettings,
+        title="Notion",
+        description="Notion endpoint for creating issue reports.",
+    )
     
     shared_dir: SharedDirSettings = SettingsField(
         default_factory=SharedDirSettings,
@@ -443,9 +490,17 @@ DEFAULT_DEBUGLY_SETTINGS = {
     
     # Endpoints Settings
     "endpoints": {
+        "notion": {
+            "enabled": True,
+            "notion": {
+                "database_id": "",
+                "api_key": "notion_debugly",
+                "assignee_id": "",
+            },
+        },
         "shared_dir": {
+            "enabled": True,
             "shared_dir": {
-                "enabled": True,
                 "windows": "P:\\Pipeline\\ayon_issues",
                 "macos": "/Volumes/Projects/Pipeline/ayon_issues",
                 "linux": "/mnt/Pipeline/ayon_issues",
