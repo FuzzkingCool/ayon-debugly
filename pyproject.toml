@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "Debugly"
-version = "0.2.4"
+version = "0.3.0"
 description = "Debugly Addon"
 authors = ["Aleks Berland"]
 license = "MIT License"
@@ -13,6 +13,7 @@ package-mode = false
 python = "^3.9"
 ayon = "^0.1.0"
 qtpy = "^2.4.3"
+requests = "^2.32.3"
 
 [tool.poetry.group.dev.dependencies]
 tomlkit = "^0.13.2"

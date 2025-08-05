@@ -9,17 +9,17 @@ class SharedFolderConfig(BaseSettingsModel):
     windows: str = SettingsField(
         default="P:\\Pipeline\\ayon_issues",
         title="Windows",
-        description="Shared Folderectory for issue on Windows.",
+        description="Shared Folder for issue on Windows.",
     )
     macos: str = SettingsField(
         default="/Volumes/Projects/Pipeline/ayon_issues",
         title="macOS",
-        description="Shared Folderectory for issue on macOS.",
+        description="Shared Folder for issue on macOS.",
     )
     linux: str = SettingsField(
         default="/mnt/Pipeline/ayon_issues",
         title="Linux",
-        description="Shared Folderectory for reports on Linux.",
+        description="Shared Folder for reports on Linux.",
     )
 
 
