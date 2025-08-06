@@ -1020,6 +1020,10 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             if hasattr(self, "statusLabel"):
                 self.statusLabel.setText(f"Report submitted to {len(results)} endpoint(s)")
             log.info(f"Report submitted to {len(results)} endpoint(s)")
+            
+            # Close the Debugly window after successful submission
+            log.info("Closing Debugly window after successful submission")
+            self.close()
         except Exception as e:
             self.progressBar.setVisible(False)
             QtWidgets.QMessageBox.critical(self, "Submission Failed", str(e))

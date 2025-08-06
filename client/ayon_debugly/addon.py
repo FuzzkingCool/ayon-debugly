@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 import os
 import traceback
-from qtpy import QtWidgets, QtGui
+
 from ayon_core.addon import AYONAddon, ITrayAddon
-from ayon_debugly.version import __version__
+from ayon_core.lib import run_detached_process
+from qtpy import QtCore, QtGui, QtWidgets
+
+from ayon_debugly.lib import ADDON_ROOT
 from ayon_debugly.logger import log
 from ayon_debugly.ui.debugly_main_window import DebuglyMainWindow
-from ayon_debugly.lib import ADDON_ROOT
+from ayon_debugly.version import __version__
+
 
 class DebuglyMenuBuilder:
     def __init__(self, addon):
@@ -18,6 +22,12 @@ class DebuglyMenuBuilder:
         action = QtWidgets.QAction("Report an Issue", menu)
         action.triggered.connect(self.addon.show_report_window)
         menu.addAction(action)
+        
+        # Add "Restart with DEBUG enabled" action
+        debug_action = QtWidgets.QAction("Restart with DEBUG enabled", menu)
+        debug_action.triggered.connect(self.addon.restart_with_debug)
+        menu.addAction(debug_action)
+        
         menu.addSeparator()
         # Add more actions/settings here as needed
 
@@ -99,4 +109,130 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
             log.info("Debugly report window shown")
         except Exception as e:
             log.error(f"Failed to show Debugly report window: {e}")
+            log.error(traceback.format_exc())
+
+    def restart_with_debug(self):
+        """Restart AYON with debug flags enabled."""
+        try:
+            log.info("Restarting AYON with DEBUG enabled")
+            
+            # Show warning dialog to user about saving work and closing applications
+            warning_dialog = QtWidgets.QMessageBox()
+            warning_dialog.setIcon(QtWidgets.QMessageBox.Warning)
+            warning_dialog.setWindowTitle("AYON Restart Warning")
+            warning_dialog.setText("AYON will restart with DEBUG logging enabled.")
+            warning_dialog.setInformativeText(
+                "⚠️  IMPORTANT: Before proceeding, please:\n\n"
+                "• Save your work in all AYON-integrated applications\n"
+                "• Close all AYON-integrated applications (Blender, Photoshop, Harmony etc.)\n"
+                "• Close any other applications that may be using AYON\n\n"
+                "The current AYON instance will close and restart with debug flags.\n"
+                "Any unsaved work or open applications may be affected."
+            )
+            warning_dialog.setStandardButtons(QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+            warning_dialog.setDefaultButton(QtWidgets.QMessageBox.Cancel)
+            
+            # Show the dialog and check user response
+            user_response = warning_dialog.exec_()
+            
+            if user_response == QtWidgets.QMessageBox.Cancel:
+                log.info("User cancelled AYON restart")
+                return
+            
+            # User clicked OK, proceed with restart
+            log.info("User confirmed AYON restart")
+            
+            # Use the existing tray manager restart method with debug flags
+            if hasattr(self, '_tray_manager') and self._tray_manager:
+                # Temporarily modify sys.argv to include debug flags
+                import sys
+                original_argv = sys.argv.copy()
+                
+                # Add debug flags to sys.argv
+                sys.argv.extend(["--debug", "--verbose", "DEBUG"])
+                
+                try:
+                    # Call the existing restart method
+                    self._tray_manager.restart()
+                finally:
+                    # Restore original sys.argv
+                    sys.argv = original_argv
+            else:
+                log.error("Tray manager not available for restart")
+                QtWidgets.QMessageBox.critical(
+                    None,
+                    "Restart Failed",
+                    "Tray manager not available for restart."
+                )
+            
+        except Exception as e:
+            log.error(f"Failed to restart AYON with DEBUG: {e}")
+            log.error(traceback.format_exc())
+            
+            # Show error message to user
+            QtWidgets.QMessageBox.critical(
+                None,
+                "Restart Failed",
+                f"Failed to restart AYON with DEBUG enabled:\n{str(e)}"
+            )
+    
+    def _exit_current_ayon(self):
+        """Exit the current AYON instance after launching the new one."""
+        try:
+            log.info("Exiting current AYON instance")
+            
+            # Use a more direct approach to exit the process
+            # AYON tray application may not respond well to app.quit()
+            import sys
+            import os
+            
+            # Force exit the current process
+            os._exit(0)
+                
+        except Exception as e:
+            log.error(f"Failed to exit current AYON instance: {e}")
+            log.error(traceback.format_exc())
+            # Force exit as fallback
+            import os
+            os._exit(0)
+    
+    def _force_exit_current_ayon(self):
+        """Force exit the current AYON instance if the first exit fails."""
+        try:
+            log.info("Force exiting current AYON instance due to slow exit")
+            import os
+            os._exit(0)
+        except Exception as e:
+            log.error(f"Failed to force exit current AYON instance: {e}")
+            log.error(traceback.format_exc())
+    
+    def _show_debug_relaunch_success(self):
+        """Show success notification for debug relaunch."""
+        try:
+            log.info("Showing debug relaunch success notification")
+            
+            # Use a simpler approach - just log the success message
+            log.info("AYON has been successfully restarted with DEBUG logging enabled!")
+            log.info("Next Steps:")
+            log.info("1. Try to recreate the problem you were experiencing")
+            log.info("2. The debug logs will now capture detailed information")
+            log.info("3. When ready, use 'Report an Issue' to submit your report")
+            log.info("4. The debug logs will be automatically included")
+            
+            # Show a simple message box without complex formatting
+            QtWidgets.QMessageBox.information(
+                None,
+                "AYON Debug Mode Active",
+                "AYON has been successfully restarted with DEBUG logging enabled!\n\n"
+                "Next Steps:\n"
+                "1. Try to recreate the problem you were experiencing\n"
+                "2. The debug logs will now capture detailed information\n"
+                "3. When ready, use 'Report an Issue' to submit your report\n"
+                "4. The debug logs will be automatically included"
+            )
+            
+            log.info("Debug relaunch success notification shown and closed")
+            
+        except Exception as e:
+            log.error(f"Failed to show debug relaunch success notification: {e}")
             log.error(traceback.format_exc())

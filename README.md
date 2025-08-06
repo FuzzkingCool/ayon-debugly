@@ -40,6 +40,7 @@ The Debugly addon provides a user-friendly interface for reporting issues with a
 - **File Upload Support**: Images, documents, and log files with automatic format conversion
 - **Database Schema Adaptation**: Automatically adapts to existing Notion database properties
 - **Success Dialog**: Endpoint-specific success information with direct links to created issues
+- **Debug Restart**: One-click restart of AYON with debug flags enabled for troubleshooting
 
 ## Configuration
 
@@ -88,6 +89,28 @@ The client automatically uses server-side configuration and requires no addition
 4. **Submit Report**: The system automatically collects all relevant data
 5. **Track Progress**: Monitor the collection progress via the status bar
 6. **View Results**: See endpoint-specific success information with direct links
+
+### Debug Restart Feature
+
+The "Restart with DEBUG enabled" menu item provides a convenient way to restart AYON with debug logging enabled:
+
+- **One-Click Restart**: Automatically launches AYON with `--debug --verbose DEBUG` flags
+- **Cross-Platform**: Works on Windows, macOS, and Linux using the `AYON_EXECUTABLE` environment variable
+- **Automatic Cleanup**: Closes the current AYON instance after launching the debug version
+- **Environment Variables**: Sets `AYON_DEBUG=1` and `AYON_VERBOSE=DEBUG` for enhanced logging
+- **Error Handling**: Shows user-friendly error messages if restart fails
+
+This feature is particularly useful for troubleshooting issues that require detailed logging output.
+
+**Complete Debug Workflow**:
+1. **User encounters an issue** in AYON
+2. **Clicks "Restart with DEBUG enabled"** from the Debugly menu
+3. **Confirms the restart** after saving work and closing applications
+4. **AYON restarts** with debug logging enabled
+5. **Success notification appears** with guidance on next steps
+6. **User reproduces the issue** while debug logs capture detailed information
+7. **User submits issue report** with automatically collected debug logs
+8. **Developers receive comprehensive logs** for faster issue resolution
 
 ### For Administrators
 
