@@ -78,7 +78,6 @@ class SubmissionWorker(QtCore.QObject):
             
             # Debug: Log the collected metadata before submission
             log.debug(f"SubmissionWorker: Collected metadata keys: {list(self.collected_metadata.keys())}")
-            log.debug(f"SubmissionWorker: Collected metadata content: {self.collected_metadata}")
             
             results = self.app.submit_report(
                 self.title,

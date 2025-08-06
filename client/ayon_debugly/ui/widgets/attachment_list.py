@@ -220,16 +220,16 @@ class AttachmentListWidget(QtWidgets.QWidget):
         path = item.data(QtCore.Qt.UserRole)
         if path and os.path.exists(path):
             import platform
-            import subprocess
+            from ayon_debugly.utils.subprocess_utils import run_silent_subprocess
             
             try:
                 if platform.system() == "Windows":
-                    subprocess.run(["explorer", "/select,", path], check=True)
+                    run_silent_subprocess(["explorer", "/select,", path])
                 elif platform.system() == "Darwin":  # macOS
-                    subprocess.run(["open", "-R", path], check=True)
+                    run_silent_subprocess(["open", "-R", path])
                 else:  # Linux
-                    subprocess.run(["xdg-open", os.path.dirname(path)], check=True)
-            except subprocess.CalledProcessError as e:
+                    run_silent_subprocess(["xdg-open", os.path.dirname(path)])
+            except Exception as e:
                 log.debug(f"Failed to open file: {e}")
 
     def _show_context_menu(self, pos):

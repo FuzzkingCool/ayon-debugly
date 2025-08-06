@@ -2,7 +2,6 @@
 """Methods for showing dialogs that can be imported from AYON Debugly."""
 
 import os
-import subprocess
 import sys
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -443,9 +442,11 @@ class SuccessDialog(QtWidgets.QDialog):
             if sys.platform.startswith("win"):
                 os.startfile(file_path)
             elif sys.platform == "darwin":
-                subprocess.run(["open", file_path])
+                from ayon_debugly.utils.subprocess_utils import run_silent_subprocess
+                run_silent_subprocess(["open", file_path])
             else:
-                subprocess.run(["xdg-open", file_path])
+                from ayon_debugly.utils.subprocess_utils import run_silent_subprocess
+                run_silent_subprocess(["xdg-open", file_path])
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Error", f"Could not open file: {e}")
             
@@ -454,11 +455,14 @@ class SuccessDialog(QtWidgets.QDialog):
         try:
             folder_path = os.path.dirname(file_path)
             if sys.platform.startswith("win"):
-                subprocess.run(["explorer", "/select,", file_path])
+                from ayon_debugly.utils.subprocess_utils import run_silent_subprocess
+                run_silent_subprocess(["explorer", "/select,", file_path])
             elif sys.platform == "darwin":
-                subprocess.run(["open", "-R", file_path])
+                from ayon_debugly.utils.subprocess_utils import run_silent_subprocess
+                run_silent_subprocess(["open", "-R", file_path])
             else:
-                subprocess.run(["xdg-open", folder_path])
+                from ayon_debugly.utils.subprocess_utils import run_silent_subprocess
+                run_silent_subprocess(["xdg-open", folder_path])
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Error", f"Could not show in folder: {e}")
 

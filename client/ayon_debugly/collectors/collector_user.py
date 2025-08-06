@@ -24,8 +24,8 @@ class CollectorUser(CollectorBase):
         if sys.platform != "win32":
             try:
                 import pwd
-                import subprocess
-                out = subprocess.check_output(["who", "-m"]).decode()
+                from ayon_debugly.utils.subprocess_utils import check_output_silent
+                out = check_output_silent(["who", "-m"])
                 info["login_time"] = out.strip()
             except Exception:
                 info["login_time"] = None

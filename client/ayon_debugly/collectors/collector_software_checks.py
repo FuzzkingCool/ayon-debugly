@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 import os
-import subprocess
 import sys
 
 import ayon_api
 
 from ayon_debugly.collectors.collector_base import CollectorBase
 from ayon_debugly.logger import log
+from ayon_debugly.utils.subprocess_utils import run_silent_subprocess, check_output_silent
 
 
 class CollectorSoftwareChecks(CollectorBase):
@@ -102,7 +102,7 @@ class CollectorSoftwareChecks(CollectorBase):
                 'powershell', '-Command', 
                 f'(Get-Item "{exe_path}").VersionInfo.FileVersion'
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            result = run_silent_subprocess(cmd, timeout=10)
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
             
@@ -118,14 +118,12 @@ class CollectorSoftwareChecks(CollectorBase):
                 # For .app bundles, try to get version from Info.plist
                 info_plist = os.path.join(exe_path, 'Contents', 'Info.plist')
                 if os.path.exists(info_plist):
-                    result = subprocess.run(['defaults', 'read', info_plist, 'CFBundleShortVersionString'], 
-                                          capture_output=True, text=True)
+                    result = run_silent_subprocess(['defaults', 'read', info_plist, 'CFBundleShortVersionString'])
                     if result.returncode == 0:
                         return result.stdout.strip()
             
             # Try to get version using mdls (metadata)
-            result = subprocess.run(['mdls', '-name', 'kMDItemVersion', exe_path], 
-                                  capture_output=True, text=True)
+            result = run_silent_subprocess(['mdls', '-name', 'kMDItemVersion', exe_path])
             if result.returncode == 0:
                 version = result.stdout.strip()
                 if version and 'kMDItemVersion = ' in version:
@@ -140,14 +138,12 @@ class CollectorSoftwareChecks(CollectorBase):
         """Get version from Linux executable using vanilla Python."""
         try:
             # Try to get version by running the executable with --version
-            result = subprocess.run([exe_path, '--version'], 
-                                  capture_output=True, text=True, timeout=5)
+            result = run_silent_subprocess([exe_path, '--version'], timeout=5)
             if result.returncode == 0:
                 return result.stdout.strip().split('\n')[0]
             
             # Try -v flag
-            result = subprocess.run([exe_path, '-v'], 
-                                  capture_output=True, text=True, timeout=5)
+            result = run_silent_subprocess([exe_path, '-v'], timeout=5)
             if result.returncode == 0:
                 return result.stdout.strip().split('\n')[0]
             
@@ -164,14 +160,13 @@ class CollectorSoftwareChecks(CollectorBase):
         try:
             if sys.platform == "win32":
                 # Use tasklist on Windows
-                result = subprocess.run(['tasklist', '/FI', f'IMAGENAME eq {exe_name}'], 
-                                      capture_output=True, text=True)
+                result = run_silent_subprocess(['tasklist', '/FI', f'IMAGENAME eq {exe_name}'])
                 if result.returncode == 0 and exe_name.lower() in result.stdout.lower():
                     # Try to get the executable path using wmic
                     try:
-                        wmic_result = subprocess.run([
+                        wmic_result = run_silent_subprocess([
                             'wmic', 'process', 'where', f'name="{exe_name}"', 'get', 'executablepath'
-                        ], capture_output=True, text=True)
+                        ])
                         if wmic_result.returncode == 0:
                             lines = wmic_result.stdout.strip().split('\n')
                             if len(lines) > 1:
@@ -183,11 +178,11 @@ class CollectorSoftwareChecks(CollectorBase):
                     return True, None
             else:
                 # Use ps on Unix systems
-                result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
+                result = run_silent_subprocess(['ps', 'aux'])
                 if result.returncode == 0 and exe_name.lower() in result.stdout.lower():
                     # Try to get executable path
                     try:
-                        ps_result = subprocess.run(['which', exe_name], capture_output=True, text=True)
+                        ps_result = run_silent_subprocess(['which', exe_name])
                         if ps_result.returncode == 0:
                             exe_path = ps_result.stdout.strip()
                             if exe_path:

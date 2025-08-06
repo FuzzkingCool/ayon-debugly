@@ -75,7 +75,11 @@ class DebuglyIssueManager:
         
         # Debug: Log the collected data before creating the issue
         log.debug(f"DebuglyIssueManager: Collected data keys: {list(collected_data.keys()) if collected_data else 'None'}")
-        log.debug(f"DebuglyIssueManager: Collected data content: {collected_data}")
+        # Log collected data safely to avoid Unicode encoding issues
+        try:
+            log.debug(f"DebuglyIssueManager: Collected data keys: {list(collected_data.keys())}")
+        except Exception as e:
+            log.debug(f"DebuglyIssueManager: Could not log collected data content due to encoding: {e}")
         
         issue = DebuglyIssue(title, user_message, collected_data, attachments, screenshot, log_files)
         

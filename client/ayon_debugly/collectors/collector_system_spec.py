@@ -48,12 +48,12 @@ class CollectorSystemSpec(CollectorBase):
             info["disk"] = None
         # GPU (very basic, platform-dependent)
         try:
-            import subprocess
+            from ayon_debugly.utils.subprocess_utils import check_output_silent
             if sys.platform == "win32":
                 out = os.popen('wmic path win32_VideoController get name').read()
                 info["gpu"] = out.strip().split("\n")[1:]
             elif sys.platform == "darwin":
-                out = subprocess.check_output(["system_profiler", "SPDisplaysDataType"]).decode()
+                out = check_output_silent(["system_profiler", "SPDisplaysDataType"])
                 info["gpu"] = [line.strip() for line in out.split("\n") if "Chipset Model" in line]
             else:
                 out = os.popen('lspci | grep VGA').read()

@@ -271,16 +271,17 @@ class ScreenshotCarousel(QtWidgets.QWidget):
         if self.screenshots and 0 <= self.current_index < len(self.screenshots):
             current_path = self.screenshots[self.current_index]
             if os.path.exists(current_path):
-                import subprocess
                 import platform
                 
                 try:
                     if platform.system() == "Windows":
                         os.startfile(current_path)
                     elif platform.system() == "Darwin":  # macOS
-                        subprocess.run(["open", current_path], check=True)
+                        from ayon_debugly.utils.subprocess_utils import run_silent_subprocess
+                        run_silent_subprocess(["open", current_path])
                     else:  # Linux
-                        subprocess.run(["xdg-open", current_path], check=True)
+                        from ayon_debugly.utils.subprocess_utils import run_silent_subprocess
+                        run_silent_subprocess(["xdg-open", current_path])
                 except Exception as e:
                     log.debug(f"Failed to open screenshot: {e}")
                     

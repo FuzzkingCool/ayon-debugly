@@ -25,6 +25,21 @@ class DebuglyApp:
         try:
             settings = ayon_api.get_addon_settings("debugly", __version__)
             log.info("Loaded settings from AYON server: %s", settings)
+            
+            # Debug: Check if notion settings are present
+            if isinstance(settings, dict) and "endpoints" in settings:
+                notion_settings = settings.get("endpoints", {}).get("notion", {})
+                if notion_settings:
+                    notion_config = notion_settings.get("notion", {})
+                    database_id = notion_config.get("database_id", "")
+                    log.info(f"Notion database_id from server: '{database_id}' (length: {len(database_id)})")
+                    if not database_id:
+                        log.warning("Notion database_id is empty in server settings!")
+                else:
+                    log.warning("No notion settings found in server response")
+            else:
+                log.warning("No endpoints found in server settings")
+            
             return settings
         except Exception as e:
             log.warning(f"Could not load server settings: {e}. Using collector defaults.")

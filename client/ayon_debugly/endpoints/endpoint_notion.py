@@ -29,28 +29,62 @@ class EndpointNotion(EndpointBase):
             if settings is None:
                 settings = ayon_api.get_addon_settings("debugly", __version__)
             log.debug(f"Notion endpoint: Loaded settings type: {type(settings)}")
+            log.debug(f"Notion endpoint: Settings keys: {list(settings.keys()) if isinstance(settings, dict) else 'Not a dict'}")
             
-            # Handle both object and dictionary settings
+            # Debug: Log the full settings structure for notion
+            if isinstance(settings, dict) and "endpoints" in settings:
+                log.debug(f"Notion endpoint: Full endpoints structure: {settings['endpoints']}")
+                if "notion" in settings["endpoints"]:
+                    log.debug(f"Notion endpoint: Full notion structure: {settings['endpoints']['notion']}")
+                    if "notion" in settings["endpoints"]["notion"]:
+                        log.debug(f"Notion endpoint: Full notion config: {settings['endpoints']['notion']['notion']}")
+                        # Check each field individually
+                        notion_config = settings['endpoints']['notion']['notion']
+                        log.debug(f"Notion endpoint: database_id from direct access: '{notion_config.get('database_id', 'NOT_FOUND')}'")
+                        log.debug(f"Notion endpoint: api_key from direct access: '{notion_config.get('api_key', 'NOT_FOUND')}'")
+                        log.debug(f"Notion endpoint: assignee_id from direct access: '{notion_config.get('assignee_id', 'NOT_FOUND')}'")
+                        log.debug(f"Notion endpoint: All keys in notion config: {list(notion_config.keys())}")
+                        log.debug(f"Notion endpoint: All values in notion config: {list(notion_config.values())}")
+            
+            # Handle multiple possible settings structures
+            notion_settings = None
+            notion_config = None
+            
+            # Try endpoints.notion structure first
             if hasattr(settings, "endpoints") and hasattr(settings.endpoints, "notion"):
                 notion_settings = settings.endpoints.notion
-                if not notion_settings.enabled:
-                    raise ValueError("Notion endpoint is not enabled in settings")
-                
-                notion_config = notion_settings.notion
+                if notion_settings.enabled:
+                    notion_config = notion_settings.notion
+            elif isinstance(settings, dict):
+                # Try endpoints.notion structure
+                if "endpoints" in settings and "notion" in settings["endpoints"]:
+                    notion_settings = settings["endpoints"]["notion"]
+                    if notion_settings.get("enabled", False):
+                        notion_config = notion_settings.get("notion", {})
+                # Try direct notion structure (as provided by user)
+                elif "notion" in settings:
+                    notion_settings = settings["notion"]
+                    if notion_settings.get("enabled", False):
+                        notion_config = notion_settings.get("notion", {})
+            
+            if not notion_settings or not notion_config:
+                raise ValueError("Notion endpoint configuration not found in settings")
+            
+            # Extract configuration values
+            if hasattr(notion_config, "api_key"):
                 api_key_secret = notion_config.api_key
                 self.database_id = notion_config.database_id
-                self.assignee_id = notion_config.assignee_id or ""
-            elif isinstance(settings, dict) and "endpoints" in settings and "notion" in settings["endpoints"]:
-                notion_settings = settings["endpoints"]["notion"]
-                if not notion_settings.get("enabled", False):
-                    raise ValueError("Notion endpoint is not enabled in settings")
-                
-                notion_config = notion_settings.get("notion", {})
+                self.assignee_id = getattr(notion_config, "assignee_id", "") or ""
+            else:
                 api_key_secret = notion_config.get("api_key")
                 self.database_id = notion_config.get("database_id")
                 self.assignee_id = notion_config.get("assignee_id", "")
-            else:
-                raise ValueError("Notion endpoint configuration not found in settings")
+            
+            log.debug(f"Notion endpoint: Extracted database_id: '{self.database_id}'")
+            log.debug(f"Notion endpoint: Extracted api_key_secret: '{api_key_secret}'")
+            log.debug(f"Notion endpoint: Extracted assignee_id: '{self.assignee_id}'")
+            log.debug(f"Notion endpoint: Database ID type: {type(self.database_id)}")
+            log.debug(f"Notion endpoint: Database ID length: {len(self.database_id) if self.database_id else 0}")
             
             # Get the actual API key from the secret
             if api_key_secret:
