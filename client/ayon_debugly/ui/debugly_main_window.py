@@ -30,6 +30,73 @@ MATERIAL_COLORS = {
 }
 
 
+class CollectorWorker(QtCore.QObject):
+    """Worker class for running collectors in background threads"""
+    finished = QtCore.Signal(str, dict)  # collector_name, data
+    error = QtCore.Signal(str, str)  # collector_name, error_message
+    
+    def __init__(self, collector_name, collector_class):
+        super().__init__()
+        self.collector_name = collector_name
+        self.collector_class = collector_class
+    
+    def run(self):
+        """Run the collector in the background thread"""
+        log.debug(f"Worker.run() called for {self.collector_name}")
+        try:
+            log.info(f"Starting collector: {self.collector_name}")
+            collector = self.collector_class()
+            data = collector.collect()
+            log.info(f"Collector {self.collector_name} completed successfully")
+            log.debug(f"Emitting finished signal for {self.collector_name}")
+            self.finished.emit(self.collector_name, data)
+        except Exception as e:
+            log.error(f"Collector {self.collector_name} failed: {e}")
+            log.error(traceback.format_exc())
+            log.debug(f"Emitting error signal for {self.collector_name}")
+            self.error.emit(self.collector_name, str(e))
+
+
+class SubmissionWorker(QtCore.QObject):
+    """Worker class for submitting reports in background threads"""
+    finished = QtCore.Signal(list)  # results
+    error = QtCore.Signal(str)  # error_message
+    
+    def __init__(self, app, title, message_markdown, attachments, collected_metadata, log_files=None):
+        super().__init__()
+        self.app = app
+        self.title = title
+        self.message_markdown = message_markdown
+        self.attachments = attachments
+        self.collected_metadata = collected_metadata
+        self.log_files = log_files or []
+    
+    def run(self):
+        """Submit the report in the background thread"""
+        try:
+            log.info("Starting report submission...")
+            
+            # Debug: Log the collected metadata before submission
+            log.debug(f"SubmissionWorker: Collected metadata keys: {list(self.collected_metadata.keys())}")
+            log.debug(f"SubmissionWorker: Collected metadata content: {self.collected_metadata}")
+            
+            results = self.app.submit_report(
+                self.title,
+                self.message_markdown,
+                self.attachments,  # attachments parameter
+                None,  # screenshot parameter
+                self.log_files,  # log_files parameter
+                self.collected_metadata,  # collected_data parameter
+            )
+            
+            log.info(f"Report submitted successfully to {len(results)} endpoint(s)")
+            self.finished.emit(results)
+        except Exception as e:
+            log.error(f"Report submission failed: {e}")
+            log.error(traceback.format_exc())
+            self.error.emit(str(e))
+
+
 class DebuglyMainWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,6 +138,12 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         
         # Initialize accordion with screenshots open by default
         self._initialize_accordion()
+        
+        # Thread management - store references to prevent garbage collection
+        self.collector_workers = []
+        self.collector_threads = []
+        self.submission_worker = None
+        self.submission_thread = None
         
         # Setup collectors in background after UI is shown
         QtCore.QTimer.singleShot(100, self._setup_collectors_async)
@@ -171,27 +244,27 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.statusLabel.setText("Collecting system information...")
             self.progressBar.setVisible(True)
             self.progressBar.setMinimum(0)
-            self.progressBar.setMaximum(3)  # Logs + Metadata + Complete
+            self.progressBar.setMaximum(0)  # Indeterminate progress
             self.progressBar.setValue(0)
             QtWidgets.QApplication.processEvents()
             
-            # Setup logs collector to populate logs widget
-            self.progressBar.setValue(1)
-            self.statusLabel.setText("Collecting log files...")
-            QtWidgets.QApplication.processEvents()
-            self._setup_log_list()
+            # Get all collectors dynamically
+            collector_pairs = get_collector_pairs()
             
-            # Setup other collectors for metadata
-            self.progressBar.setValue(2)
-            self.statusLabel.setText("Collecting system metadata...")
-            QtWidgets.QApplication.processEvents()
-            self._setup_metadata_collectors()
+            # Setup progress bar for total collectors
+            total_collectors = len(collector_pairs)
+            self.progressBar.setMaximum(total_collectors)
+            self.progressBar.setValue(0)
             
-            # Complete
-            self.progressBar.setValue(3)
-            self.progressBar.setVisible(False)
-            self.statusLabel.setText("Ready")
-            log.info("All collectors completed successfully")
+            # Track completed collectors
+            self.completed_collectors = 0
+            self.collected_metadata = {}
+            
+            # Start all collectors in background threads
+            for collector_name, collector_class in collector_pairs:
+                self._start_collector_thread(collector_name, collector_class)
+            
+            log.info(f"Started {total_collectors} collectors in background threads")
             
         except Exception as e:
             log.error(f"Failed to setup collectors: {e}")
@@ -199,57 +272,110 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.progressBar.setVisible(False)
             self.statusLabel.setText(f"Error collecting data: {e}")
 
+    def _start_collector_thread(self, collector_name, collector_class):
+        """Start a single collector in a background thread using canonical Qt threading"""
+        # Create worker and thread
+        worker = CollectorWorker(collector_name, collector_class)
+        thread = QtCore.QThread()
+        
+        # Move worker to thread
+        worker.moveToThread(thread)
+        
+        # Connect signals
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_collector_finished)
+        worker.error.connect(self._on_collector_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        
+        # Cleanup when thread finishes
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        
+        # Store references to prevent garbage collection
+        self.collector_workers.append(worker)
+        self.collector_threads.append(thread)
+        
+        # Start the thread
+        thread.start()
+        
+        log.debug(f"Started collector thread for {collector_name}")
+        log.debug(f"Thread is running: {thread.isRunning()}")
+
+    def _on_collector_finished(self, collector_name, data):
+        """Handle collector completion"""
+        log.debug(f"Received finished signal for collector: {collector_name}")
+        self.collected_metadata[collector_name] = data
+        self.completed_collectors += 1
+        
+        # Update progress
+        self.progressBar.setValue(self.completed_collectors)
+        self.statusLabel.setText(f"Collected {collector_name.lower()}... ({self.completed_collectors}/{self.progressBar.maximum()})")
+        
+        # Update UI if this is the logs collector
+        if "Log" in collector_name:
+            self._update_log_list_from_data(data)
+        
+        # Check if all collectors are done
+        if self.completed_collectors >= self.progressBar.maximum():
+            self._on_all_collectors_finished()
+
+    def _on_collector_error(self, collector_name, error_message):
+        """Handle collector error"""
+        log.debug(f"Received error signal for collector: {collector_name}")
+        self.completed_collectors += 1
+        
+        # Add error info to metadata
+        self.collected_metadata[f"{collector_name}_error"] = error_message
+        
+        # Update progress
+        self.progressBar.setValue(self.completed_collectors)
+        self.statusLabel.setText(f"Error collecting {collector_name.lower()}... ({self.completed_collectors}/{self.progressBar.maximum()})")
+        
+        # Check if all collectors are done
+        if self.completed_collectors >= self.progressBar.maximum():
+            self._on_all_collectors_finished()
+
+    def _on_all_collectors_finished(self):
+        """Handle completion of all collectors"""
+        # Complete progress bar
+        self.progressBar.setVisible(False)
+        self.statusLabel.setText("Ready")
+        
+        # Update the collected info widget
+        self._update_collected_info_widget()
+        
+        log.info("All collectors completed successfully")
+
+    def _update_log_list_from_data(self, data):
+        """Update log list widget from collected data"""
+        try:
+            log_files = data.get("log_files", [])
+            
+            self.log_model = QtGui.QStandardItemModel(self.logListView)
+            for log_file in log_files:
+                item = QtGui.QStandardItem(os.path.basename(log_file["path"]))
+                # Make logs non-editable - remove checkable property
+                item.setData(log_file["path"], QtCore.Qt.UserRole)
+                # Add tooltip with file info
+                tooltip = f"Path: {log_file['path']}\nSize: {log_file['size']} bytes\nModified: {log_file['mtime']}"
+                item.setToolTip(tooltip)
+                self.log_model.appendRow(item)
+            self.logListView.setModel(self.log_model)
+            # Make the list view read-only
+            self.logListView.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+            log.info(f"Loaded {len(log_files)} log files into log list")
+        except Exception as e:
+            log.error(f"Failed to update log list: {e}")
+            log.error(traceback.format_exc())
+
     def _setup_collectors(self):
         """Legacy method - now calls async version"""
         self._setup_collectors_async()
 
     def _setup_metadata_collectors(self):
-        """Run all collectors except logs and combine into metadata JSON"""
-        # Get all collectors dynamically (except logs which is handled separately)
-        collector_pairs = get_collector_pairs()
-        
-        # Filter out logs collector since it's handled separately
-        metadata_collectors = [
-            (friendly_name, collector_class) 
-            for friendly_name, collector_class in collector_pairs 
-            if "Log" not in friendly_name
-        ]
-        
-        # Setup progress bar
-        total_collectors = len(metadata_collectors)
-        self.progressBar.setVisible(True)
-        self.progressBar.setMinimum(0)
-        self.progressBar.setMaximum(total_collectors)
-        self.progressBar.setValue(0)
-        
-        for i, (collector_name, collector_class) in enumerate(metadata_collectors):
-            try:
-                self.statusLabel.setText(f"Collecting {collector_name.lower()}...")
-                self.progressBar.setValue(i)
-                QtWidgets.QApplication.processEvents()
-                
-                log.info(f"Running collector: {collector_name}")
-                
-                # All collectors now get settings directly from AYON API
-                collector = collector_class()
-                data = collector.collect()
-                
-                # Use the friendly name as the section name
-                self.collected_metadata[collector_name] = data
-                
-                log.info(f"Collector {collector_name} completed successfully")
-            except Exception as e:
-                log.error(f"Collector {collector_name} failed: {e}")
-                log.error(traceback.format_exc())
-                # Add error info to metadata
-                self.collected_metadata[f"{collector_name}_error"] = str(e)
-        
-        # Complete progress bar
-        self.progressBar.setValue(total_collectors)
-        self.progressBar.setVisible(False)
-        
-        # Update the collected info widget
-        self._update_collected_info_widget()
+        """Legacy method - now handled by async version"""
+        pass
 
     def _create_vertical_accordion(self):
         """Create the vertical accordion panel on the right side"""
@@ -735,30 +861,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 fa.setWeight(QtGui.QFont.Black)
                 header.setFont(fa)
 
-    def _setup_log_list(self):
-        """Setup logs collector and populate logs widget"""
-        try:
-            # Logs collector now gets settings directly from AYON API
-            logs_collector = CollectorLogs()
-            log_files_data = logs_collector.collect()
-            log_files = log_files_data.get("log_files", [])
-            
-            self.log_model = QtGui.QStandardItemModel(self.logListView)
-            for log_file in log_files:
-                item = QtGui.QStandardItem(os.path.basename(log_file["path"]))
-                # Make logs non-editable - remove checkable property
-                item.setData(log_file["path"], QtCore.Qt.UserRole)
-                # Add tooltip with file info
-                tooltip = f"Path: {log_file['path']}\nSize: {log_file['size']} bytes\nModified: {log_file['mtime']}"
-                item.setToolTip(tooltip)
-                self.log_model.appendRow(item)
-            self.logListView.setModel(self.log_model)
-            # Make the list view read-only
-            self.logListView.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-            log.info(f"Loaded {len(log_files)} log files into log list")
-        except Exception as e:
-            log.error(f"Failed to setup log list: {e}")
-            log.error(traceback.format_exc())
+
 
     def take_screenshot(self):
         # Hide the main window completely
@@ -964,84 +1067,99 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             )
             log.warning("Submission blocked: missing message and attachments")
             return
+        
+        # Disable submit button to prevent double submission
+        self.submitButton.setEnabled(False)
+        
+        # Start submission in background thread
+        self._submit_report_async(title, attachments)
+
+    def _submit_report_async(self, title, attachments):
+        """Submit report in background thread"""
+        # Setup progress bar for submission
+        self.progressBar.setVisible(True)
+        self.progressBar.setMinimum(0)
+        self.progressBar.setMaximum(0)  # Indeterminate progress
+        self.progressBar.setValue(0)
+        self.statusLabel.setText("Preparing report...")
+        QtWidgets.QApplication.processEvents()
+        
+        # Get log files from the log model
+        log_files = []
+        if hasattr(self, "log_model") and self.log_model:
+            for row in range(self.log_model.rowCount()):
+                item = self.log_model.item(row)
+                if item and item.data(QtCore.Qt.UserRole):
+                    log_files.append(item.data(QtCore.Qt.UserRole))
+        
+        # Start submission thread
+        self._start_submission_thread(title, attachments, log_files)
+
+    def _start_submission_thread(self, title, attachments, log_files):
+        """Start submission in background thread using canonical Qt threading"""
+        # Create worker and thread
+        worker = SubmissionWorker(
+            self.app,
+            title,
+            self.form_model.message_markdown,
+            attachments,
+            self.collected_metadata,
+            log_files
+        )
+        thread = QtCore.QThread()
+        
+        # Move worker to thread
+        worker.moveToThread(thread)
+        
+        # Connect signals
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_submission_finished)
+        worker.error.connect(self._on_submission_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        
+        # Cleanup when thread finishes
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        
+        # Store references to prevent garbage collection
+        self.submission_worker = worker
+        self.submission_thread = thread
+        
+        # Start the thread
+        thread.start()
+
+    def _on_submission_finished(self, results):
+        """Handle successful submission"""
+        # Complete submission
+        self.progressBar.setVisible(False)
+        
+        # Show success dialog with endpoint-specific information
+        show_success_dialog(results, self)
+        
+        self.statusLabel.setText(f"Report submitted to {len(results)} endpoint(s)")
+        log.info(f"Report submitted to {len(results)} endpoint(s)")
+        
+        # Close the Debugly window after successful submission
+        log.info("Closing Debugly window after successful submission")
+        self.close()
+
+    def _on_submission_error(self, error_message):
+        """Handle submission error"""
+        self.progressBar.setVisible(False)
+        self.submitButton.setEnabled(True)  # Re-enable submit button
+        
+        QtWidgets.QMessageBox.critical(self, "Submission Failed", error_message)
+        self.statusLabel.setText(f"Error: {error_message}")
+        log.error(f"Submission failed: {error_message}")
+        log.error(traceback.format_exc())
+        
+        # Cleanup temporary files from UI components
         try:
-            user = getpass.getuser()
-            
-            # Setup progress bar for submission
-            self.progressBar.setVisible(True)
-            self.progressBar.setMinimum(0)
-            self.progressBar.setMaximum(3)  # Prepare + Collect logs + Submit
-            self.progressBar.setValue(0)
-            self.statusLabel.setText("Preparing report...")
-            QtWidgets.QApplication.processEvents()
-            
-            # Update form model with title
-            self.form_model.title = title
-            
-            # Prepare attachments (metadata is included in issue.json, not as separate attachment)
-            self.progressBar.setValue(1)
-            self.statusLabel.setText("Preparing attachments...")
-            QtWidgets.QApplication.processEvents()
-            
-            all_attachments = attachments.copy()
-
-            # Get all log files as a list of file paths (all logs are included)
-            self.progressBar.setValue(1)
-            self.statusLabel.setText("Collecting log files...")
-            QtWidgets.QApplication.processEvents()
-            
-            log_files = []
-            if hasattr(self, "log_model") and self.log_model:
-                for row in range(self.log_model.rowCount()):
-                    item = self.log_model.item(row)
-                    if item and item.data(QtCore.Qt.UserRole):
-                        log_files.append(item.data(QtCore.Qt.UserRole))
-
-            # Submit the report
-            self.progressBar.setValue(2)
-            self.statusLabel.setText("Submitting report...")
-            QtWidgets.QApplication.processEvents()
-            
-            # Debug: Log the collected metadata before submission
-            log.debug(f"DebuglyMainWindow: Collected metadata keys: {list(self.collected_metadata.keys())}")
-            log.debug(f"DebuglyMainWindow: Collected metadata content: {self.collected_metadata}")
-            
-            results = self.app.submit_report(
-                title,
-                self.form_model.message_markdown,
-                all_attachments,  # attachments parameter
-                None,  # screenshot parameter
-                log_files,  # log_files parameter
-                self.collected_metadata,  # collected_data parameter
-            )
-            # Complete submission
-            self.progressBar.setValue(3)
-            self.progressBar.setVisible(False)
-            
-            # Show success dialog with endpoint-specific information
-            show_success_dialog(results, self)
-            
-            if hasattr(self, "statusLabel"):
-                self.statusLabel.setText(f"Report submitted to {len(results)} endpoint(s)")
-            log.info(f"Report submitted to {len(results)} endpoint(s)")
-            
-            # Close the Debugly window after successful submission
-            log.info("Closing Debugly window after successful submission")
-            self.close()
+            if hasattr(self, 'screenshot_widget'):
+                self.screenshot_widget.cleanup()
         except Exception as e:
-            self.progressBar.setVisible(False)
-            QtWidgets.QMessageBox.critical(self, "Submission Failed", str(e))
-            if hasattr(self, "statusLabel"):
-                self.statusLabel.setText(f"Error: {e}")
-            log.error(f"Submission failed: {e}")
-            log.error(traceback.format_exc())
-        finally:
-            # Cleanup temporary files from UI components
-            try:
-                if hasattr(self, 'screenshot_widget'):
-                    self.screenshot_widget.cleanup()
-            except Exception as e:
-                log.warning(f"Failed to cleanup screenshot widget: {e}")
+            log.warning(f"Failed to cleanup screenshot widget: {e}")
     def apply_material_theme(self):
         self.setStyleSheet(f"""
             QWidget {{
@@ -1588,6 +1706,18 @@ class DebuglyMainWindow(QtWidgets.QWidget):
     def closeEvent(self, event):
         """Clean up temporary files when window is closed"""
         try:
+            # Clean up collector threads
+            if hasattr(self, 'collector_threads'):
+                for thread in self.collector_threads:
+                    if thread.isRunning():
+                        thread.quit()
+                        thread.wait(1000)
+            
+            # Clean up submission thread
+            if hasattr(self, 'submission_thread') and self.submission_thread and self.submission_thread.isRunning():
+                self.submission_thread.quit()
+                self.submission_thread.wait(1000)
+            
             if hasattr(self, 'screenshot_widget'):
                 self.screenshot_widget.cleanup()
         except Exception as e:
