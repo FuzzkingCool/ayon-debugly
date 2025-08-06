@@ -73,6 +73,10 @@ class DebuglyIssueManager:
         if collected_data is None:
             collected_data = self.collect_data()
         
+        # Debug: Log the collected data before creating the issue
+        log.debug(f"DebuglyIssueManager: Collected data keys: {list(collected_data.keys()) if collected_data else 'None'}")
+        log.debug(f"DebuglyIssueManager: Collected data content: {collected_data}")
+        
         issue = DebuglyIssue(title, user_message, collected_data, attachments, screenshot, log_files)
         
         results = []

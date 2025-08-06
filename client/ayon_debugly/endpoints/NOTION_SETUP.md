@@ -92,6 +92,11 @@ The integration will automatically detect and use these properties if they exist
 - **Assign** (type: People) - For assigning issues to team members
   - Will be set if you configure an assignee_id in the settings
 
+- **Submitted By** (type: People) - For tracking who submitted the issue
+  - Automatically set to the current user's Ayon full name
+  - The user must exist in your Notion workspace for this to work
+  - If the user is not found, this field will be left empty
+
 - **Attachments** (type: Files) - For file attachments
   - The integration will automatically upload and attach files to this field
 
@@ -136,6 +141,7 @@ When an issue is submitted through Debugly, the Notion integration will:
    - Status: "Not started" (if available)
    - Priority: Based on available options
    - Assign: The configured assignee (if set)
+   - Submitted By: The current user's Ayon full name (if user exists in workspace)
 3. **Add detailed content** including:
    - Issue description with markdown support
    - Collected system data (environment, OS info, etc.)
@@ -177,6 +183,12 @@ When an issue is submitted through Debugly, the Notion integration will:
    - Check that your database has a "Title" property (required)
    - Verify that select options match exactly (case-sensitive)
    - Check the Notion API documentation for the latest requirements
+
+7. **"Submitted By field is not being set"**
+   - Make sure the user exists in your Notion workspace
+   - Verify that the user's full name in Ayon matches their name in Notion
+   - Check that the user has been invited to the workspace
+   - The integration will log warnings if users are not found
 
 ### Getting Help
 

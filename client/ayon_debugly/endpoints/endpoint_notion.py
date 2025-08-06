@@ -120,7 +120,11 @@ class EndpointNotion(EndpointBase):
         data = {
             "parent": {"database_id": self.database_id},
             "properties": properties,
-            "children": children
+            "children": children,
+            "icon": {
+                "type": "emoji",
+                "emoji": "❓"
+            }
         }
 
         log.debug(f"Notion endpoint: Request data keys: {list(data.keys())}")
@@ -151,6 +155,8 @@ class EndpointNotion(EndpointBase):
                 except:
                     log.error("Notion endpoint: Could not parse error response as JSON")
                 raise Exception(f"Failed to create Notion page: {response.status_code} - {response.text}")
+            else:
+                log.debug(f"Notion endpoint: Page creation successful with status {response.status_code}")
         except requests.exceptions.RequestException as e:
             log.error(f"Notion endpoint: Request failed with exception: {e}")
             raise Exception(f"Notion API request failed: {e}")
@@ -159,6 +165,26 @@ class EndpointNotion(EndpointBase):
         page_url = result.get("url", "")
         page_id = result.get("id", "")
         log.debug(f"Notion endpoint: Successfully created page: {page_url}")
+        log.debug(f"Notion endpoint: Page ID: {page_id}")
+        log.debug(f"Notion endpoint: Full API response: {json.dumps(result, indent=2)}")
+        
+        # Check if the Submitted By field was actually set in the response
+        if "properties" in result:
+            submitted_by_prop = result["properties"].get("Submitted By", {})
+            log.debug(f"Notion endpoint: Submitted By field in API response: {submitted_by_prop}")
+            
+            # Check if the people array is empty or missing
+            if submitted_by_prop and "people" in submitted_by_prop:
+                people_array = submitted_by_prop["people"]
+                log.debug(f"Notion endpoint: People array in response: {people_array}")
+                if people_array:
+                    log.debug(f"Notion endpoint: First person in array: {people_array[0]}")
+                else:
+                    log.warning("Notion endpoint: People array is empty in API response")
+            else:
+                log.warning("Notion endpoint: No people array found in Submitted By field")
+        else:
+            log.debug("Notion endpoint: No properties found in API response")
         
         # Upload attachments after page creation
         if page_id:
@@ -362,6 +388,127 @@ class EndpointNotion(EndpointBase):
                 ]
             }
         
+        # Submitted By (people) - set to the current user's Ayon full name
+        if "Submitted By" in database_properties:
+            log.debug("Notion endpoint: Processing Submitted By field")
+            log.debug(f"Notion endpoint: Submitted By field schema: {database_properties['Submitted By']}")
+        else:
+            # Check for similar field names
+            similar_fields = [key for key in database_properties.keys() if 'submitted' in key.lower() or 'by' in key.lower()]
+            log.debug(f"Notion endpoint: Submitted By field not found. Similar fields: {similar_fields}")
+            log.debug(f"Notion endpoint: All database properties: {list(database_properties.keys())}")
+        
+        if "Submitted By" in database_properties:
+            
+            # First, list all users in the workspace for debugging
+            log.debug("Notion endpoint: Listing all users in workspace...")
+            all_users = self._list_all_users()
+            
+            # Log all available users for debugging
+            if all_users:
+                log.debug(f"Notion endpoint: Found {len(all_users)} users in workspace:")
+                for i, user in enumerate(all_users):
+                    user_id = user.get("id", "No ID")
+                    user_name = user.get("name", "No name")
+                    user_type = user.get("type", "No type")
+                    user_email = user.get("person", {}).get("email", "No email")
+                    log.debug(f"Notion endpoint: User {i+1}: ID='{user_id}', Name='{user_name}', Type='{user_type}', Email='{user_email}'")
+            else:
+                log.warning("Notion endpoint: No users found in workspace")
+            
+            # Get user's Ayon full name from collected data
+            user_full_name = None
+            user_email = None
+            user_username = None
+            
+            if hasattr(issue, 'collected_data') and issue.collected_data:
+                # Try to find user data with case-insensitive search
+                user_data = None
+                for key in issue.collected_data.keys():
+                    if key.lower() == 'user':
+                        user_data = issue.collected_data[key]
+                        break
+                
+                if not user_data:
+                    log.debug(f"Notion endpoint: No user data found in collected_data. Available keys: {list(issue.collected_data.keys())}")
+                    user_data = {}
+                else:
+                    log.debug(f"Notion endpoint: User data from collected_data: {user_data}")
+                
+                # The user data is nested - extract from the inner 'user' key
+                if isinstance(user_data, dict) and 'user' in user_data:
+                    user_data = user_data['user']
+                    log.debug(f"Notion endpoint: Extracted nested user data: {user_data}")
+                
+                user_full_name = user_data.get('ayon_full_name')
+                user_email = user_data.get('ayon_email')
+                user_username = user_data.get('ayon_username')
+                
+                log.debug(f"Notion endpoint: Extracted user info - Full Name: '{user_full_name}', Email: '{user_email}', Username: '{user_username}'")
+            else:
+                log.debug("Notion endpoint: No collected_data found in issue")
+            
+            # Use email directly - it's unique and we have it
+            if user_email and user_email != "unknown":
+                log.debug(f"Notion endpoint: Searching for user by email: '{user_email}'")
+                
+                # Search in the workspace users list directly instead of using the search API
+                user_id = None
+                for user in all_users:
+                    user_email_in_workspace = user.get("person", {}).get("email", "")
+                    if user_email_in_workspace == user_email:
+                        user_id = user.get("id")
+                        log.debug(f"Notion endpoint: Found user by email '{user_email}' with ID: {user_id}")
+                        break
+                
+                if not user_id:
+                    log.warning(f"Notion endpoint: User with email '{user_email}' not found in Notion workspace")
+            else:
+                log.warning("Notion endpoint: No valid email found in user data")
+                user_id = None
+            
+            if user_id:
+                # Get the full user object from the search results
+                user_object = None
+                for user in all_users:
+                    if user.get("id") == user_id:
+                        user_object = user
+                        break
+                
+                # Try the canonical Notion API approach for people fields
+                # According to the API docs, we should use just the ID
+                submitted_by_value = {
+                    "people": [
+                        {"id": user_id}
+                    ]
+                }
+                properties["Submitted By"] = submitted_by_value
+                log.debug(f"Notion endpoint: Set Submitted By to user: {user_email} (ID: {user_id})")
+                log.debug(f"Notion endpoint: Submitted By property value: {submitted_by_value}")
+                log.debug(f"Notion endpoint: User details - Name: '{user_email}', ID: '{user_id}'")
+                
+                # Also log the full user object for debugging
+                if user_object:
+                    log.debug(f"Notion endpoint: Full user object: {user_object}")
+                    
+                    # Try alternative format as backup (some integrations require full object)
+                    alternative_value = {
+                        "people": [
+                            {
+                                "object": "user",
+                                "id": user_id,
+                                "type": "person",
+                                "name": user_object.get("name", user_email)
+                            }
+                        ]
+                    }
+                    log.debug(f"Notion endpoint: Alternative Submitted By value: {alternative_value}")
+            else:
+                log.warning(f"Notion endpoint: Could not find user with email '{user_email}' in Notion workspace")
+                log.debug(f"Notion endpoint: Available users in workspace: {all_users}")
+        else:
+            log.debug("Notion endpoint: Submitted By field not found in database schema")
+        
         # Attachments (files) - we'll handle this after page creation
         if "Attachments" in database_properties:
             log.debug("Notion endpoint: Attachments field found in database schema")
@@ -375,6 +522,12 @@ class EndpointNotion(EndpointBase):
         # Log each property being set for debugging
         for prop_name, prop_value in properties.items():
             log.debug(f"Notion endpoint: Setting property '{prop_name}': {prop_value}")
+        
+        # Specifically log the Submitted By property if it exists
+        if "Submitted By" in properties:
+            log.debug(f"Notion endpoint: Submitted By property is set to: {properties['Submitted By']}")
+        else:
+            log.debug("Notion endpoint: Submitted By property is NOT set in final properties")
         
         return properties
 
@@ -830,6 +983,140 @@ class EndpointNotion(EndpointBase):
         log.debug(f"Notion endpoint: Successfully uploaded file content for {file_name}")
         
         return file_upload_id
+
+    def _get_or_create_user_id(self, search_term: str) -> str:
+        """
+        Get a user ID for the given search term in Notion
+        
+        Args:
+            search_term: The search term (name, email, or username)
+            
+        Returns:
+            str: The user ID, or None if not found
+        """
+        headers = {
+            "Authorization": f"Bearer {self.notion_token}",
+            "Content-Type": "application/json",
+            "Notion-Version": self.notion_version
+        }
+        
+        try:
+            log.debug(f"Notion endpoint: Searching for user with term: '{search_term}'")
+            
+            # First, try to search for existing users
+            search_url = f"{self.base_url}/users/search"
+            search_data = {
+                "query": search_term,
+                "filter": {
+                    "value": "person",
+                    "property": "object"
+                }
+            }
+            
+            log.debug(f"Notion endpoint: Searching for user with query: '{search_term}'")
+            log.debug(f"Notion endpoint: Search URL: {search_url}")
+            log.debug(f"Notion endpoint: Search data: {search_data}")
+            
+            response = requests.post(
+                search_url,
+                headers=headers,
+                json=search_data,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                users = response.json().get("results", [])
+                log.debug(f"Notion endpoint: Found {len(users)} users in search results")
+                
+                # Log all found users for debugging
+                for i, user in enumerate(users):
+                    user_name = user.get("name", "Unknown")
+                    user_email = user.get("person", {}).get("email", "No email")
+                    user_id = user.get("id", "No ID")
+                    log.debug(f"Notion endpoint: User {i+1}: Name='{user_name}', Email='{user_email}', ID='{user_id}'")
+                
+                # Look for exact name match first
+                for user in users:
+                    user_name = user.get("name", "")
+                    if user_name == search_term:
+                        user_id = user.get("id")
+                        log.debug(f"Notion endpoint: Found exact name match '{search_term}' with ID: {user_id}")
+                        
+                        # Validate the user ID format
+                        if user_id and len(user_id) == 36 and user_id.count('-') == 4:
+                            log.debug(f"Notion endpoint: User ID '{user_id}' appears to be a valid UUID")
+                        else:
+                            log.warning(f"Notion endpoint: User ID '{user_id}' may not be a valid UUID")
+                        
+                        # Also validate that the user is of type "person"
+                        user_type = user.get("type", "")
+                        if user_type == "person":
+                            log.debug(f"Notion endpoint: User '{search_term}' is a person type user")
+                        else:
+                            log.warning(f"Notion endpoint: User '{search_term}' is not a person type (type: {user_type})")
+                        
+                        return user_id
+                
+                # Look for exact email match
+                for user in users:
+                    user_email = user.get("person", {}).get("email", "")
+                    if user_email == search_term:
+                        user_id = user.get("id")
+                        log.debug(f"Notion endpoint: Found exact email match '{search_term}' with ID: {user_id}")
+                        return user_id
+                
+
+                
+                log.debug(f"Notion endpoint: No matching user found for '{search_term}'")
+            else:
+                log.warning(f"Notion endpoint: User search failed with status {response.status_code}: {response.text}")
+            
+            # If no user found, we cannot create users via API
+            # Notion doesn't allow creating users through the API
+            log.warning(f"Notion endpoint: User '{search_term}' not found in workspace. Users must be manually added to the workspace.")
+            return None
+            
+        except Exception as e:
+            log.warning(f"Notion endpoint: Error searching for user '{search_term}': {e}")
+            return None
+
+    def _list_all_users(self):
+        """
+        List all users in the Notion workspace for debugging purposes
+        """
+        headers = {
+            "Authorization": f"Bearer {self.notion_token}",
+            "Content-Type": "application/json",
+            "Notion-Version": self.notion_version
+        }
+        
+        try:
+            # Get all users in the workspace
+            response = requests.get(
+                f"{self.base_url}/users",
+                headers=headers,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                users = response.json().get("results", [])
+                log.debug(f"Notion endpoint: Found {len(users)} total users in workspace")
+                
+                for i, user in enumerate(users):
+                    user_name = user.get("name", "Unknown")
+                    user_email = user.get("person", {}).get("email", "No email")
+                    user_id = user.get("id", "No ID")
+                    user_type = user.get("type", "Unknown")
+                    log.debug(f"Notion endpoint: User {i+1}: Name='{user_name}', Email='{user_email}', ID='{user_id}', Type='{user_type}'")
+                
+                return users
+            else:
+                log.warning(f"Notion endpoint: Failed to list users - {response.status_code}: {response.text}")
+                return []
+                
+        except Exception as e:
+            log.warning(f"Notion endpoint: Error listing users: {e}")
+            return []
 
     def get_success_info(self, result):
         """

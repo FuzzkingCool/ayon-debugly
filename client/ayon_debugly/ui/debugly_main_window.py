@@ -1002,6 +1002,10 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.statusLabel.setText("Submitting report...")
             QtWidgets.QApplication.processEvents()
             
+            # Debug: Log the collected metadata before submission
+            log.debug(f"DebuglyMainWindow: Collected metadata keys: {list(self.collected_metadata.keys())}")
+            log.debug(f"DebuglyMainWindow: Collected metadata content: {self.collected_metadata}")
+            
             results = self.app.submit_report(
                 title,
                 self.form_model.message_markdown,
