@@ -79,8 +79,8 @@ Your Notion database should have the following properties (columns):
 The integration will automatically detect and use these properties if they exist:
 
 - **Status** (type: Select) - For tracking issue status
-  - The integration will try to set this to "Not started" if available
-  - If "Not started" is not available, it will use the first option in the list
+  - The integration will try to set this to "Backlog if available
+  - If "Backlog" is not available, it will use the first option in the list
 
 - **Priority** (type: Select) - For setting issue priority
   - The integration will try to find options containing "P0", "P1", "P2", or "P3"
@@ -103,10 +103,10 @@ The integration will automatically detect and use these properties if they exist
 ### Recommended Select Options
 
 #### Status Options
-- Not started
+- Backlog
+- Ready To Start
 - In progress
 - Done
-- Blocked
 
 #### Priority Options
 - P0 (Critical)
@@ -138,7 +138,7 @@ When an issue is submitted through Debugly, the Notion integration will:
 1. **Create a new page** in your Notion database
 2. **Set database properties**:
    - Title: The issue title
-   - Status: "Not started" (if available)
+   - Status: "Backlog" (if available)
    - Priority: Based on available options
    - Assign: The configured assignee (if set)
    - Submitted By: The current user's Ayon full name (if user exists in workspace)

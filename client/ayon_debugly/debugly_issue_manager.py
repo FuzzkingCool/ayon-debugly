@@ -1,4 +1,5 @@
 import os
+import traceback
 
 from ayon_debugly.collectors import (
     collector_env,
@@ -97,6 +98,7 @@ class DebuglyIssueManager:
                 except Exception as e:
                     failed_endpoints.append(f"{endpoint.__class__.__name__}: {e}")
                     log.error(f"Failed to submit to {endpoint.__class__.__name__}: {e}")
+                    log.error(traceback.format_exc())
             
             # If all endpoints failed, raise an exception
             if not results and failed_endpoints:

@@ -1,6 +1,7 @@
 
 from typing import List
-from ayon_server.settings import BaseSettingsModel, SettingsField # type: ignore
+
+from ayon_server.settings import BaseSettingsModel, SettingsField  # type: ignore
 from ayon_server.settings.enum import secrets_enum
 
 

@@ -591,12 +591,66 @@ class WysiwygWidget(QtWidgets.QWidget):
         return self._html_to_markdown(self.editor.toHtml())
 
     def _html_to_markdown(self, html):
-        # Basic HTML to Markdown conversion
-        # This is a simplified version - you might want to use a proper library
+        # More complete HTML -> Markdown for our editor output
         text = html
-        text = re.sub(r'<b>(.*?)</b>', r'**\1**', text)
-        text = re.sub(r'<i>(.*?)</i>', r'*\1*', text)
-        text = re.sub(r'<a href="(.*?)">(.*?)</a>', r'[\2](\1)', text)
-        # Remove HTML tags
-        text = re.sub(r'<[^>]+>', '', text)
-        return text.strip() 
+
+        # Remove <style>...</style> and its contents
+        text = re.sub(r"<style[\s\S]*?</style>", "", text, flags=re.IGNORECASE)
+
+        # <br> to newline
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+
+        # Headings
+        text = re.sub(r"<h1[^>]*>([\s\S]*?)</h1>", r"# \1\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<h2[^>]*>([\s\S]*?)</h2>", r"## \1\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<h3[^>]*>([\s\S]*?)</h3>", r"### \1\n", text, flags=re.IGNORECASE)
+
+        # Dividers
+        text = re.sub(r"<hr[^>]*>", "\n---\n", text, flags=re.IGNORECASE)
+
+        # Bold / Italic (wrap each line span so headings aren't merged)
+        text = re.sub(r"<(?:b|strong)>([\s\S]*?)</(?:b|strong)>", r"**\1**", text, flags=re.IGNORECASE)
+        text = re.sub(r"<(?:i|em)>([\s\S]*?)</(?:i|em)>", r"*\1*", text, flags=re.IGNORECASE)
+
+        # Links
+        text = re.sub(r"<a[^>]*href=\"([^\"]+)\"[^>]*>([\s\S]*?)</a>", r"[\2](\1)", text, flags=re.IGNORECASE)
+
+        # Underline/Strikethrough spans -> tokens we will parse later
+        text = re.sub(r"<u>([\s\S]*?)</u>", r"<U>\1</U>", text, flags=re.IGNORECASE)
+        text = re.sub(r"<span[^>]*style=\"[^\"]*text-decoration:\s*underline[^\"]*\"[^>]*>([\s\S]*?)</span>", r"<U>\1</U>", text, flags=re.IGNORECASE)
+        text = re.sub(r"<span[^>]*text-decoration:\s*line-through[^>]*>([\s\S]*?)</span>", r"~~\1~~", text, flags=re.IGNORECASE)
+
+        # Blockquotes (best effort)
+        text = re.sub(r"<blockquote[^>]*>([\s\S]*?)</blockquote>", r"> \1\n", text, flags=re.IGNORECASE)
+
+        # Ordered lists: convert each <ol>...</ol> block to lines starting with "1. "
+        def _convert_ol(m):
+            inner = m.group(1)
+            inner = re.sub(r"\s*<li[^>]*>([\s\S]*?)</li>\s*", r"1. \1\n", inner, flags=re.IGNORECASE)
+            return f"\n{inner}\n"
+        text = re.sub(r"<ol[^>]*>([\s\S]*?)</ol>", _convert_ol, text, flags=re.IGNORECASE)
+
+        # Unordered lists: convert each <ul>...</ul> block to lines starting with "- "
+        def _convert_ul(m):
+            inner = m.group(1)
+            inner = re.sub(r"\s*<li[^>]*>([\s\S]*?)</li>\s*", r"- \1\n", inner, flags=re.IGNORECASE)
+            return f"\n{inner}\n"
+        text = re.sub(r"<ul[^>]*>([\s\S]*?)</ul>", _convert_ul, text, flags=re.IGNORECASE)
+
+        # Paragraph boundaries
+        text = re.sub(r"</p>", "\n\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<p[^>]*>", "", text, flags=re.IGNORECASE)
+
+        # Strip any remaining tags
+        text = re.sub(r"<[^>]+>", "", text)
+
+        # Remove stray CSS selector lines that may remain
+        text = re.sub(r"(?m)^\s*[^<{\n]{1,60}\{[^}]*\}\s*$", "", text)
+        text = re.sub(r"(?m)^\s*(p,?|hr|li\.(?:unchecked|checked)::[^\s]*)\s*$", "", text)
+
+        # Collapse excessive blank lines
+        text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+        # Unescape HTML entities
+        import html as _html
+        text = _html.unescape(text)
+        return text.strip()
