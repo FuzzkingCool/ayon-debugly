@@ -788,13 +788,18 @@ class EndpointNotion(EndpointBase):
                     file_id = self.upload_file(attachment_path, page_id)
                     log.debug(f"Notion endpoint: Successfully uploaded {os.path.basename(attachment_path)}: {file_id}")
                     
+                    # Ensure .log files are displayed with .txt extension in Notion
+                    base_name = os.path.basename(attachment_path)
+                    name_root, name_ext = os.path.splitext(base_name)
+                    display_name = f"{name_root}.txt" if name_ext.lower() == ".log" else base_name
+
                     # Add to the list of uploaded files using file_upload type
                     uploaded_files.append({
                         "type": "file_upload",
                         "file_upload": {
                             "id": file_id
                         },
-                        "name": os.path.basename(attachment_path)
+                        "name": display_name
                     })
                 else:
                     log.warning(f"Notion endpoint: Attachment file not found: {attachment_path}")
