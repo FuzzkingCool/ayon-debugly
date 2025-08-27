@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "Debugly"
-version = "0.4.0"
+version = "0.4.13"
 description = "Debugly Addon"
 authors = ["Aleks Berland"]
 license = "MIT License"
@@ -24,7 +24,7 @@ mkdocstrings-python = "^1.16.2"
 mkdocstrings-shell = "^1.0.2"
 mkdocs-click = "^0.8.1"
 mkdocs-minify-plugin = "^0.8.0"
-markdown-checklist = "^0.4.4"
+markdown-checklist = "^0.4.13"
 mdx-gh-links = "^0.4"
 pymdown-extensions = "^10.14.3"
 mike = "^2.1.3"

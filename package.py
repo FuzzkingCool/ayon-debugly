@@ -1,6 +1,6 @@
 name = "debugly"
 title = "debugly"
-version = "0.4.0"
+version = "0.4.13"
 client_dir = "ayon_debugly"
 
 ayon_server_version = ">=1.1.2"
