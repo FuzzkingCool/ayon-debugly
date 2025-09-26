@@ -61,6 +61,7 @@ class SubmissionWorker(QtCore.QObject):
     """Worker class for submitting reports in background threads"""
     finished = QtCore.Signal(list)  # results
     error = QtCore.Signal(str)  # error_message
+    progress = QtCore.Signal(str, int, int)  # message, current, total
     
     def __init__(self, app, title, message_markdown, attachments, collected_metadata, log_files=None):
         super().__init__()
@@ -75,6 +76,7 @@ class SubmissionWorker(QtCore.QObject):
         """Submit the report in the background thread"""
         try:
             log.info("Starting report submission...")
+            self.progress.emit("Starting report submission...", 0, 100)
             
             # Debug: Log the collected metadata before submission
             log.debug(f"SubmissionWorker: Collected metadata keys: {list(self.collected_metadata.keys())}")
@@ -86,9 +88,11 @@ class SubmissionWorker(QtCore.QObject):
                 None,  # screenshot parameter
                 self.log_files,  # log_files parameter
                 self.collected_metadata,  # collected_data parameter
+                progress_callback=self.progress.emit  # Pass progress callback
             )
             
             log.info(f"Report submitted successfully to {len(results)} endpoint(s)")
+            self.progress.emit("Report submitted successfully!", 100, 100)
             self.finished.emit(results)
         except Exception as e:
             log.error(f"Report submission failed: {e}")
@@ -1114,6 +1118,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_submission_finished)
         worker.error.connect(self._on_submission_error)
+        worker.progress.connect(self._on_submission_progress)
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         
@@ -1127,6 +1132,16 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         
         # Start the thread
         thread.start()
+
+    def _on_submission_progress(self, message, current, total):
+        """Handle submission progress updates"""
+        self.statusLabel.setText(message)
+        if total > 0:
+            self.progressBar.setMaximum(total)
+            self.progressBar.setValue(current)
+        else:
+            self.progressBar.setMaximum(0)  # Indeterminate progress
+        QtWidgets.QApplication.processEvents()
 
     def _on_submission_finished(self, results):
         """Handle successful submission"""

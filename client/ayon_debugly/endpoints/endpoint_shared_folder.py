@@ -143,7 +143,7 @@ class EndpointSharedFolder(EndpointBase):
         except Exception:
             return os.path.expanduser("~/ayon_reports")
 
-    def submit(self, issue):
+    def submit(self, issue, progress_callback=None):
         zip_path = issue.to_zip()
         
         # Create a meaningful filename with title and date

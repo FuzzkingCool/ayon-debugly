@@ -21,7 +21,7 @@ class EndpointBase(ABC):
         pass
 
     @abstractmethod
-    def submit(self, issue: DebuglyIssue):
+    def submit(self, issue: DebuglyIssue, progress_callback=None):
         pass
 
     def get_success_info(self, result):

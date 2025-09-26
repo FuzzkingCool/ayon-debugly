@@ -65,7 +65,7 @@ class DebuglyIssueManager:
             data.update(collector.collect())
         return data
 
-    def submit_report(self, title, user_message, attachments=None, screenshot=None, log_files=None, collected_data=None):
+    def submit_report(self, title, user_message, attachments=None, screenshot=None, log_files=None, collected_data=None, progress_callback=None):
         # Check if we have any endpoints configured
         if not self.endpoints:
             raise Exception("No endpoints are configured or enabled. Please check your settings.")
@@ -89,16 +89,29 @@ class DebuglyIssueManager:
         failed_endpoints = []
         
         try:
-            for endpoint in self.endpoints:
+            for i, endpoint in enumerate(self.endpoints):
                 try:
-                    result = endpoint.submit(issue)
+                    # Emit progress for endpoint start
+                    if progress_callback:
+                        progress_callback(f"Submitting to {endpoint.__class__.__name__}...", i, len(self.endpoints))
+                    
+                    result = endpoint.submit(issue, progress_callback=progress_callback)
                     results.append(result)
                     endpoint_results.append((endpoint, result))
                     log.info(f"Successfully submitted to {endpoint.__class__.__name__}")
+                    
+                    # Emit progress for endpoint completion
+                    if progress_callback:
+                        progress_callback(f"Completed {endpoint.__class__.__name__}", i + 1, len(self.endpoints))
+                        
                 except Exception as e:
                     failed_endpoints.append(f"{endpoint.__class__.__name__}: {e}")
                     log.error(f"Failed to submit to {endpoint.__class__.__name__}: {e}")
                     log.error(traceback.format_exc())
+                    
+                    # Emit progress for endpoint failure
+                    if progress_callback:
+                        progress_callback(f"Failed {endpoint.__class__.__name__}", i + 1, len(self.endpoints))
             
             # If all endpoints failed, raise an exception
             if not results and failed_endpoints:
