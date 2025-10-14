@@ -1,4 +1,3 @@
-
 from typing import List
 
 from ayon_server.settings import BaseSettingsModel, SettingsField  # type: ignore
@@ -27,17 +26,17 @@ class SharedFolderConfig(BaseSettingsModel):
 class LogDirEntry(BaseSettingsModel):
     _layout = "expanded"
     windows: str = SettingsField(
-        default_factory=lambda: "~/.ayon/logs",
+        default_factory=lambda: "${AYON_LOCAL_SANDBOX}/logs",
         title="Windows",
         description="Log Directory for Windows.",
     )
     macos: str = SettingsField(
-        default_factory=lambda: "~/.ayon/logs",
+        default_factory=lambda: "${AYON_LOCAL_SANDBOX}/logs",
         title="macOS",
         description="Log Directory for macOS.",
     )
     linux: str = SettingsField(
-        default_factory=lambda: "~/.ayon/logs",
+        default_factory=lambda: "${AYON_LOCAL_SANDBOX}/logs",
         title="Linux",
         description="Log Directory for Linux.",
     )
@@ -182,13 +181,13 @@ class NotionConfig(BaseSettingsModel):
 
 class NotionSettings(BaseSettingsModel):
     """Notion endpoint configuration."""
-    
+
     enabled: bool = SettingsField(
         default=True,
         title="Enabled",
         description="Enable or disable Notion endpoint.",
     )
-    
+
     notion: NotionConfig = SettingsField(
         default_factory=NotionConfig,
         title="Notion",
@@ -198,13 +197,13 @@ class NotionSettings(BaseSettingsModel):
 
 class SharedFolderSettings(BaseSettingsModel):
     """Shared Folder endpoint configuration."""
-    
+
     enabled: bool = SettingsField(
         default=True,
         title="Enabled",
         description="Enable or disable Shared Folder endpoint.",
     )
-    
+
     shared_folder: SharedFolderConfig = SettingsField(
         default_factory=SharedFolderConfig,
         title="Shared Folder",
@@ -214,13 +213,13 @@ class SharedFolderSettings(BaseSettingsModel):
 
 class EndpointsSettings(BaseSettingsModel):
     """Endpoints configuration."""
-    
+
     notion: NotionSettings = SettingsField(
         default_factory=NotionSettings,
         title="Notion",
         description="Notion endpoint for creating issue reports.",
     )
-    
+
     shared_folder: SharedFolderSettings = SettingsField(
         default_factory=SharedFolderSettings,
         title="Shared Folder",
@@ -230,7 +229,7 @@ class EndpointsSettings(BaseSettingsModel):
 
 class LogsSettings(BaseSettingsModel):
     """Logs collection configuration."""
-    
+
     log_dirs: List[LogDirEntry] = SettingsField(
         default_factory=lambda: [
             LogDirEntry(
@@ -273,17 +272,26 @@ class LogsSettings(BaseSettingsModel):
 
 class EnvironmentRedactionsSettings(BaseSettingsModel):
     """Environment redactions configuration."""
-    
+
     enabled: bool = SettingsField(
         default=True,
         title="Enabled",
         description="Enable or disable environment variable redaction.",
     )
-    
+
     env_redact_keys: List[str] = SettingsField(
         default_factory=lambda: [
-            "PASSWORD", "TOKEN", "SECRET", "KEY", "AUTH", "SESSION", 
-            "COOKIE", "KITSU_PWD", "API_KEY", "PRIVATE_KEY", "ACCESS_TOKEN"
+            "PASSWORD",
+            "TOKEN",
+            "SECRET",
+            "KEY",
+            "AUTH",
+            "SESSION",
+            "COOKIE",
+            "KITSU_PWD",
+            "API_KEY",
+            "PRIVATE_KEY",
+            "ACCESS_TOKEN",
         ],
         title="Environment Key Redactions",
         description="List of environment variable key names to redact from collected data.",
@@ -292,34 +300,31 @@ class EnvironmentRedactionsSettings(BaseSettingsModel):
 
 class LogRedactionsSettings(BaseSettingsModel):
     """Log redactions configuration."""
-    
+
     enabled: bool = SettingsField(
         default=True,
         title="Enabled",
         description="Enable or disable log content redaction.",
     )
-    
+
     log_redactions: List[LogRedactionEntry] = SettingsField(
         default_factory=lambda: [
             LogRedactionEntry(
                 pattern="password=([^\\s&;,\\n]+)",
-                replacement="password=***REDACTED***"
+                replacement="password=***REDACTED***",
             ),
             LogRedactionEntry(
-                pattern="token=([a-zA-Z0-9_-]+)",
-                replacement="token=***REDACTED***"
+                pattern="token=([a-zA-Z0-9_-]+)", replacement="token=***REDACTED***"
             ),
             LogRedactionEntry(
-                pattern="secret=([^\\s&;,\\n]+)",
-                replacement="secret=***REDACTED***"
+                pattern="secret=([^\\s&;,\\n]+)", replacement="secret=***REDACTED***"
             ),
             LogRedactionEntry(
-                pattern="api_key=([^\\s&;,\\n]+)",
-                replacement="api_key=***REDACTED***"
+                pattern="api_key=([^\\s&;,\\n]+)", replacement="api_key=***REDACTED***"
             ),
             LogRedactionEntry(
                 pattern="auth_token=([^\\s&;,\\n]+)",
-                replacement="auth_token=***REDACTED***"
+                replacement="auth_token=***REDACTED***",
             ),
         ],
         title="Log Redactions",
@@ -329,13 +334,13 @@ class LogRedactionsSettings(BaseSettingsModel):
 
 class RedactionsSettings(BaseSettingsModel):
     """Redactions configuration."""
-    
+
     environment: EnvironmentRedactionsSettings = SettingsField(
         default_factory=EnvironmentRedactionsSettings,
         title="Environment Redactions",
         description="Environment variable redaction settings.",
     )
-    
+
     log: LogRedactionsSettings = SettingsField(
         default_factory=LogRedactionsSettings,
         title="Log Redactions",
@@ -343,12 +348,9 @@ class RedactionsSettings(BaseSettingsModel):
     )
 
 
-
-
-
 class IssueSettings(BaseSettingsModel):
     """Issue configuration."""
-    
+
     issue_default_text: str = SettingsField(
         default="""# Problem
 ---
@@ -384,28 +386,28 @@ class DebuglySettings(BaseSettingsModel):
         title="Enabled",
         description="Enable or disable the Debugly addon.",
     )
-    
+
     # Issue Settings
     issue_settings: IssueSettings = SettingsField(
         default_factory=IssueSettings,
         title="Issue Settings",
         description="Issue report configuration and templates.",
     )
-    
+
     # Endpoints Settings
     endpoints: EndpointsSettings = SettingsField(
         default_factory=EndpointsSettings,
         title="Endpoints",
         description="Endpoint configurations for report submission.",
     )
-    
+
     # Logs Settings
     logs: LogsSettings = SettingsField(
         default_factory=LogsSettings,
         title="Logs",
         description="Log collection and processing settings.",
     )
-    
+
     # Redactions Settings
     redactions: RedactionsSettings = SettingsField(
         default_factory=RedactionsSettings,
@@ -448,9 +450,7 @@ class DebuglySettings(BaseSettingsModel):
                     exe="Harmony.app",
                     path="/Applications/Toon Boom Harmony 24",
                 ),
-                linux=SoftwarePlatformCheckLinux(
-                    exe="harmony", path="/opt/Harmony"
-                ),
+                linux=SoftwarePlatformCheckLinux(exe="harmony", path="/opt/Harmony"),
             ),
         ],
         title="Software Checks",
@@ -464,7 +464,6 @@ def get_default_settings_model():
 
 DEFAULT_DEBUGLY_SETTINGS = {
     "enabled": True,
-    
     # Issue Settings
     "issue_settings": {
         "issue_default_text": """# Problem
@@ -488,7 +487,6 @@ DEFAULT_DEBUGLY_SETTINGS = {
    
 """,
     },
-    
     # Endpoints Settings
     "endpoints": {
         "notion": {
@@ -508,7 +506,6 @@ DEFAULT_DEBUGLY_SETTINGS = {
             },
         },
     },
-    
     # Logs Settings
     "logs": {
         "log_dirs": [
@@ -533,14 +530,22 @@ DEFAULT_DEBUGLY_SETTINGS = {
             },
         ],
     },
-    
     # Redactions Settings
     "redactions": {
         "environment": {
             "enabled": True,
             "env_redact_keys": [
-                "PASSWORD", "TOKEN", "SECRET", "KEY", "AUTH", "SESSION", 
-                "COOKIE", "KITSU_PWD", "API_KEY", "PRIVATE_KEY", "ACCESS_TOKEN"
+                "PASSWORD",
+                "TOKEN",
+                "SECRET",
+                "KEY",
+                "AUTH",
+                "SESSION",
+                "COOKIE",
+                "KITSU_PWD",
+                "API_KEY",
+                "PRIVATE_KEY",
+                "ACCESS_TOKEN",
             ],
         },
         "log": {
@@ -548,23 +553,23 @@ DEFAULT_DEBUGLY_SETTINGS = {
             "log_redactions": [
                 {
                     "pattern": "password=([^\\s&;,\\n]+)",
-                    "replacement": "password=***REDACTED***"
+                    "replacement": "password=***REDACTED***",
                 },
                 {
                     "pattern": "token=([a-zA-Z0-9_-]+)",
-                    "replacement": "token=***REDACTED***"
+                    "replacement": "token=***REDACTED***",
                 },
                 {
                     "pattern": "secret=([^\\s&;,\\n]+)",
-                    "replacement": "secret=***REDACTED***"
+                    "replacement": "secret=***REDACTED***",
                 },
                 {
                     "pattern": "api_key=([^\\s&;,\\n]+)",
-                    "replacement": "api_key=***REDACTED***"
+                    "replacement": "api_key=***REDACTED***",
                 },
                 {
                     "pattern": "auth_token=([^\\s&;,\\n]+)",
-                    "replacement": "auth_token=***REDACTED***"
+                    "replacement": "auth_token=***REDACTED***",
                 },
             ],
         },
