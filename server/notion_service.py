@@ -1143,44 +1143,59 @@ class NotionService:
     def _update_page_attachments(
         self, page_id: str, uploaded_files: list[dict[str, Any]]
     ):
-        """Update page with attachment files. This works the same for both API versions."""
-        log.info(
-            f"Updating page {page_id[:8]}... with {len(uploaded_files)} attachments"
-        )
+        """Update page with attachment files by appending to existing attachments."""
+        log.info(f"Updating page {page_id[:8]}... with {len(uploaded_files)} new attachments")
         
-        # Split into smaller batches if we have many files to avoid request size limits
-        batch_size = 10  # Notion can handle ~10 files per request reliably
+        try:
+            # Get existing attachments
+            existing_files = self._get_existing_attachments(page_id)
+            log.debug(f"Found {len(existing_files)} existing attachments")
+            
+            # Combine existing files with new files
+            all_files = existing_files + uploaded_files
+            log.debug(f"Total files after adding new ones: {len(all_files)}")
+            
+        except Exception as e:
+            log.warning(f"Failed to get existing attachments, using only new files: {e}")
+            all_files = uploaded_files
         
-        for i in range(0, len(uploaded_files), batch_size):
-            batch = uploaded_files[i:i + batch_size]
-            batch_num = (i // batch_size) + 1
-            total_batches = (len(uploaded_files) + batch_size - 1) // batch_size
+        # Update the page with all files
+        payload = {"properties": {"Attachments": {"files": all_files}}}
+        
+        try:
+            resp = requests.patch(
+                f"{self.base_url}/pages/{page_id}",
+                headers=self._headers(),
+                json=payload,
+                timeout=30
+            )
+            resp.raise_for_status()
+            log.debug(f"Successfully updated page with {len(all_files)} total attachments")
             
-            log.debug(f"Updating page with batch {batch_num}/{total_batches} ({len(batch)} files)")
-            
-            payload = {"properties": {"Attachments": {"files": batch}}}
+        except Exception as e:
+            log.error(f"Failed to update page attachments: {e}")
+            raise
 
-            try:
-                resp = requests.patch(
-                    f"{self.base_url}/pages/{page_id}",
-                    headers=self._headers(),
-                    json=payload,
-                    timeout=(30, 600),  # 30s connect, 10min read
-                )
-                resp.raise_for_status()
-                log.debug(f"Successfully updated page with batch {batch_num}")
-                
-                # Small delay between batches to avoid rate limiting
-                if batch_num < total_batches:
-                    import time
-                    time.sleep(1)
-                    
-            except Exception as e:
-                log.warning(f"Failed to update page with batch {batch_num}: {e}")
-                # Continue with other batches - partial success is better than total failure
-                continue
-
-        log.info(f"Completed page attachment update process")
+    def _get_existing_attachments(self, page_id: str) -> list[dict[str, Any]]:
+        """Get existing attachments from a page."""
+        try:
+            headers = self._headers()
+            response = requests.get(
+                f"{self.base_url}/pages/{page_id}/properties/Attachments",
+                headers=headers,
+                timeout=30
+            )
+            if response.status_code == 200:
+                data = response.json()
+                files = data.get("files", [])
+                log.debug(f"Retrieved {len(files)} existing attachments")
+                return files
+            else:
+                log.warning(f"Failed to get existing attachments: {response.status_code}")
+                return []
+        except Exception as e:
+            log.warning(f"Failed to get existing attachments: {e}")
+            return []
 
     def _safe_attach_wrapper(self, attachments_zip_b64: str, page_id: str) -> None:
         """
