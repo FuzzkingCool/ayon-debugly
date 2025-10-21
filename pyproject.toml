@@ -15,6 +15,7 @@ ayon = "^0.1.0"
 qtpy = "^2.4.3"
 requests = "^2.32.3"
 nxtools = "^1.6"
+pydantic = "^2.12.2"
 
 [tool.poetry.group.dev.dependencies]
 tomlkit = "^0.13.2"
