@@ -260,7 +260,7 @@ def get_client_files_mapping() -> List[Tuple[str, str]]:
 
 
 def get_client_zip_content(log) -> io.BytesIO:
-    log.info("Preparing client code zip")
+    log.debug("Preparing client code zip")
     files_mapping: List[Tuple[str, str]] = get_client_files_mapping()
     stream = io.BytesIO()
     with ZipFileLongPaths(stream, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -309,7 +309,7 @@ def copy_client_code(output_dir: str, log: logging.Logger):
         log (logging.Logger)
 
     """
-    log.info(f"Copying client for {ADDON_NAME}-{ADDON_VERSION}")
+    log.debug(f"Copying client for {ADDON_NAME}-{ADDON_VERSION}")
 
     full_output_path = os.path.join(
         output_dir, f"{ADDON_NAME}_{ADDON_VERSION}"
@@ -322,7 +322,7 @@ def copy_client_code(output_dir: str, log: logging.Logger):
         dst_path = os.path.join(full_output_path, dst_subpath)
         safe_copy_file(src_path, dst_path)
 
-    log.info("Client copy finished")
+    log.debug("Client copy finished")
 
 
 def copy_addon_package(
@@ -337,12 +337,12 @@ def copy_addon_package(
         log (logging.Logger): Logger object.
 
     """
-    log.info(f"Copying package for {ADDON_NAME}-{ADDON_VERSION}")
+    log.debug(f"Copying package for {ADDON_NAME}-{ADDON_VERSION}")
 
     # Add addon name and version to output directory
     addon_output_dir: str = os.path.join(output_dir, ADDON_NAME, ADDON_VERSION)
     if os.path.isdir(addon_output_dir):
-        log.info(f"Purging {addon_output_dir}")
+        log.debug(f"Purging {addon_output_dir}")
         shutil.rmtree(addon_output_dir)
 
     os.makedirs(addon_output_dir, exist_ok=True)
@@ -358,13 +358,13 @@ def copy_addon_package(
         else:
             safe_copy_file(src_file, dst_path)
 
-    log.info("Package copy finished")
+    log.debug("Package copy finished")
 
 
 def create_addon_package(
     output_dir: str, files_mapping: List[FileMapping], log: logging.Logger
 ):
-    log.info(f"Creating package for {ADDON_NAME}-{ADDON_VERSION}")
+    log.debug(f"Creating package for {ADDON_NAME}-{ADDON_VERSION}")
 
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"{ADDON_NAME}-{ADDON_VERSION}.zip")
@@ -377,7 +377,7 @@ def create_addon_package(
             else:
                 zipf.write(src_file, dst_subpath)
 
-    log.info("Package created")
+    log.debug("Package created")
 
 
 def main(
@@ -400,7 +400,7 @@ def main(
     bundle_in_current_dir = output_dir is None
 
     log: logging.Logger = logging.getLogger("create_package")
-    log.info("Package creation started")
+    log.debug("Package creation started")
 
     try:
         if not output_dir:
@@ -423,7 +423,7 @@ def main(
             copy_client_code(output_dir, log)
             return
 
-        log.info(f"Preparing package for {ADDON_NAME}-{ADDON_VERSION}")
+        log.debug(f"Preparing package for {ADDON_NAME}-{ADDON_VERSION}")
 
         if os.path.exists(FRONTEND_ROOT):
             build_frontend()
@@ -458,10 +458,10 @@ def main(
     finally:
         # Clean up bundle directory if it was created in current directory
         if bundle_in_current_dir and os.path.exists(bundle_dir):
-            log.info(f"Cleaning up temporary bundle directory: {bundle_dir}")
+            log.debug(f"Cleaning up temporary bundle directory: {bundle_dir}")
             shutil.rmtree(bundle_dir)
 
-    log.info("Package creation finished")
+    log.debug("Package creation finished")
 
 
 if __name__ == "__main__":

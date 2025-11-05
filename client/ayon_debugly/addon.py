@@ -106,7 +106,7 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
             self._report_window.show()
             self._report_window.raise_()
             self._report_window.activateWindow()
-            log.info("Debugly report window shown")
+            log.debug("Debugly report window shown")
         except Exception as e:
             log.error(f"Failed to show Debugly report window: {e}")
             log.error(traceback.format_exc())
@@ -114,7 +114,7 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
     def restart_with_debug(self):
         """Restart AYON with debug flags enabled."""
         try:
-            log.info("Restarting AYON with DEBUG enabled")
+            log.debug("Restarting AYON with DEBUG enabled")
             
             # Show warning dialog to user about saving work and closing applications
             warning_dialog = QtWidgets.QMessageBox()
@@ -136,11 +136,11 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
             user_response = warning_dialog.exec_()
             
             if user_response == QtWidgets.QMessageBox.Cancel:
-                log.info("User cancelled AYON restart")
+                log.debug("User cancelled AYON restart")
                 return
             
             # User clicked OK, proceed with restart
-            log.info("User confirmed AYON restart")
+            log.debug("User confirmed AYON restart")
             
             # Use the existing tray manager restart method with debug flags
             if hasattr(self, '_tray_manager') and self._tray_manager:
@@ -179,7 +179,7 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
     def _exit_current_ayon(self):
         """Exit the current AYON instance after launching the new one."""
         try:
-            log.info("Exiting current AYON instance")
+            log.debug("Exiting current AYON instance")
             
             # Use a more direct approach to exit the process
             # AYON tray application may not respond well to app.quit()
@@ -199,7 +199,7 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
     def _force_exit_current_ayon(self):
         """Force exit the current AYON instance if the first exit fails."""
         try:
-            log.info("Force exiting current AYON instance due to slow exit")
+            log.debug("Force exiting current AYON instance due to slow exit")
             import os
             os._exit(0)
         except Exception as e:
@@ -209,15 +209,15 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
     def _show_debug_relaunch_success(self):
         """Show success notification for debug relaunch."""
         try:
-            log.info("Showing debug relaunch success notification")
+            log.debug("Showing debug relaunch success notification")
             
             # Use a simpler approach - just log the success message
-            log.info("AYON has been successfully restarted with DEBUG logging enabled!")
-            log.info("Next Steps:")
-            log.info("1. Try to recreate the problem you were experiencing")
-            log.info("2. The debug logs will now capture detailed information")
-            log.info("3. When ready, use 'Report an Issue' to submit your report")
-            log.info("4. The debug logs will be automatically included")
+            log.debug("AYON has been successfully restarted with DEBUG logging enabled!")
+            log.debug("Next Steps:")
+            log.debug("1. Try to recreate the problem you were experiencing")
+            log.debug("2. The debug logs will now capture detailed information")
+            log.debug("3. When ready, use 'Report an Issue' to submit your report")
+            log.debug("4. The debug logs will be automatically included")
             
             # Show a simple message box without complex formatting
             QtWidgets.QMessageBox.information(
@@ -231,7 +231,7 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
                 "4. The debug logs will be automatically included"
             )
             
-            log.info("Debug relaunch success notification shown and closed")
+            log.debug("Debug relaunch success notification shown and closed")
             
         except Exception as e:
             log.error(f"Failed to show debug relaunch success notification: {e}")

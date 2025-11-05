@@ -182,10 +182,10 @@ class EndpointNotion(EndpointBase):
 
         from ayon_debugly.version import __version__
 
-        log.info(
+        log.debug(
             f"Notion endpoint: Starting submission for issue '{issue.title[:50]}...'"
         )
-        log.info("Notion endpoint: Step 1/3 - Creating Issue in Notion...")
+        log.debug("Notion endpoint: Step 1/3 - Creating Issue in Notion...")
         if progress_callback:
             progress_callback("Creating Issue Page in Notion...", 0, 100)
         log.debug(
@@ -418,30 +418,30 @@ class EndpointNotion(EndpointBase):
 
         page_url = result.get("url", "")
         page_id = result.get("page_id", "")
-        log.info(
+        log.debug(
             f"Notion endpoint: Server created page - URL: {page_url}, ID: {page_id[:8] if page_id else 'None'}..."
         )
-        log.info("Notion endpoint: Step 2/3 - Page created successfully!")
+        log.debug("Notion endpoint: Step 2/3 - Page created successfully!")
         if progress_callback:
             progress_callback("Page created successfully!", 33, 100)
 
         # Step 2: Upload attachments individually if we have them and page creation succeeded
         if attachments_zip_b64 and page_id:
-            log.info(
+            log.debug(
                 "Notion endpoint: Step 3/3 - Starting individual attachment uploads..."
             )
             if progress_callback:
                 progress_callback("Starting file uploads...", 50, 100)
             try:
                 uploaded_files = self._upload_attachments_individually(attachments_zip_b64, page_id, progress_callback)
-                log.info(f"Notion endpoint: Collected {len(uploaded_files)} uploaded files for finalization")
+                log.debug(f"Notion endpoint: Collected {len(uploaded_files)} uploaded files for finalization")
                 if uploaded_files:
-                    log.info(f"Notion endpoint: Finalizing {len(uploaded_files)} attachments to page {page_id[:8]}...")
+                    log.debug(f"Notion endpoint: Finalizing {len(uploaded_files)} attachments to page {page_id[:8]}...")
                     self._finalize_attachments(page_id, uploaded_files)
                 else:
                     log.warning("Notion endpoint: No files were successfully uploaded for finalization")
-                log.info("Notion endpoint: All attachments uploaded successfully")
-                log.info("Notion endpoint: Step 3/3 - Complete! All files uploaded.")
+                log.debug("Notion endpoint: All attachments uploaded successfully")
+                log.debug("Notion endpoint: Step 3/3 - Complete! All files uploaded.")
                 if progress_callback:
                     progress_callback("All files uploaded successfully!", 100, 100)
             except Exception as e:
@@ -459,7 +459,7 @@ class EndpointNotion(EndpointBase):
         import io
         import zipfile
 
-        log.info("Notion endpoint: Extracting files from ZIP for batch upload...")
+        log.debug("Notion endpoint: Extracting files from ZIP for batch upload...")
 
         try:
             # Decode the base64 ZIP
@@ -478,7 +478,7 @@ class EndpointNotion(EndpointBase):
                     )
                 ]
 
-                log.info(
+                log.debug(
                     f"Notion endpoint: Found {len(relevant_files)} files to upload in batch"
                 )
 
@@ -525,7 +525,7 @@ class EndpointNotion(EndpointBase):
 
                 # Upload all files in one batch
                 if files_data:
-                    log.info(f"Notion endpoint: Uploading {len(files_data)} files in batch...")
+                    log.debug(f"Notion endpoint: Uploading {len(files_data)} files in batch...")
                     if progress_callback:
                         progress_callback("Uploading files to Notion...", 75, 100)
                     
@@ -546,7 +546,7 @@ class EndpointNotion(EndpointBase):
                         
                         result = resp.data if hasattr(resp, 'data') else resp
                         if result.get("success"):
-                            log.info(f"Notion endpoint: Successfully uploaded {result.get('uploaded_count', 0)} files")
+                            log.debug(f"Notion endpoint: Successfully uploaded {result.get('uploaded_count', 0)} files")
                         else:
                             log.warning(f"Notion endpoint: Batch upload failed: {result.get('error', 'Unknown error')}")
                             
@@ -562,7 +562,7 @@ class EndpointNotion(EndpointBase):
                             
                             result = resp.data if hasattr(resp, 'data') else resp
                             if result.get("success"):
-                                log.info(f"Notion endpoint: Successfully uploaded {result.get('uploaded_count', 0)} files (unversioned)")
+                                log.debug(f"Notion endpoint: Successfully uploaded {result.get('uploaded_count', 0)} files (unversioned)")
                             else:
                                 log.warning(f"Notion endpoint: Batch upload failed: {result.get('error', 'Unknown error')}")
                                 
@@ -585,7 +585,7 @@ class EndpointNotion(EndpointBase):
         import io
         import zipfile
 
-        log.info("Notion endpoint: Extracting files from ZIP for individual upload...")
+        log.debug("Notion endpoint: Extracting files from ZIP for individual upload...")
         uploaded_files = []
 
         try:
@@ -605,7 +605,7 @@ class EndpointNotion(EndpointBase):
                     )
                 ]
 
-                log.info(
+                log.debug(
                     f"Notion endpoint: Found {len(relevant_files)} files to upload individually"
                 )
 
@@ -630,7 +630,7 @@ class EndpointNotion(EndpointBase):
                             else base_name
                         )
 
-                        log.info(
+                        log.debug(
                             f"Notion endpoint: Uploading file {i + 1}/{len(relevant_files)}: {display_name}"
                         )
 
@@ -653,7 +653,7 @@ class EndpointNotion(EndpointBase):
 
                         # Emit progress update
                         progress = (i + 1) / len(relevant_files) * 100
-                        log.info(
+                        log.debug(
                             f"Notion endpoint: Upload progress: {progress:.1f}% ({i + 1}/{len(relevant_files)})"
                         )
                         if progress_callback:
@@ -678,10 +678,10 @@ class EndpointNotion(EndpointBase):
     def _finalize_attachments(self, page_id: str, uploaded_files: list):
         """Finalize attachments by updating the Notion page with all uploaded files."""
         if not uploaded_files:
-            log.info("Notion endpoint: No files to finalize")
+            log.debug("Notion endpoint: No files to finalize")
             return
         
-        log.info(f"Notion endpoint: Finalizing {len(uploaded_files)} attachments...")
+        log.debug(f"Notion endpoint: Finalizing {len(uploaded_files)} attachments...")
         
         try:
             # Use the server's batch update endpoint to attach all files at once
@@ -702,7 +702,7 @@ class EndpointNotion(EndpointBase):
                 
                 result = resp.data if hasattr(resp, 'data') else resp
                 if result.get("success"):
-                    log.info(f"Notion endpoint: Successfully finalized {result.get('finalized_count', len(uploaded_files))} attachments")
+                    log.debug(f"Notion endpoint: Successfully finalized {result.get('finalized_count', len(uploaded_files))} attachments")
                 else:
                     log.warning(f"Notion endpoint: Finalization failed: {result.get('error', 'Unknown error')}")
                     
@@ -718,7 +718,7 @@ class EndpointNotion(EndpointBase):
                     
                     result = resp.data if hasattr(resp, 'data') else resp
                     if result.get("success"):
-                        log.info(f"Notion endpoint: Successfully finalized {result.get('finalized_count', len(uploaded_files))} attachments (unversioned)")
+                        log.debug(f"Notion endpoint: Successfully finalized {result.get('finalized_count', len(uploaded_files))} attachments (unversioned)")
                     else:
                         log.warning(f"Notion endpoint: Finalization failed: {result.get('error', 'Unknown error')}")
                         

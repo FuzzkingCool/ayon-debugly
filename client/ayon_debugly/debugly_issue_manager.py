@@ -40,7 +40,7 @@ class DebuglyIssueManager:
         try:
             shared_folder_endpoint = EndpointSharedFolder(settings=settings)
             self.endpoints.append(shared_folder_endpoint)
-            log.info("Shared Folder endpoint initialized successfully")
+            log.debug("Shared Folder endpoint initialized successfully")
         except Exception as e:
             log.warning(f"Shared Folder endpoint not available: {e}")
         
@@ -49,7 +49,7 @@ class DebuglyIssueManager:
             notion_endpoint = EndpointNotion()
             notion_endpoint.initialize(settings=settings)
             self.endpoints.append(notion_endpoint)
-            log.info("Notion endpoint initialized successfully")
+            log.debug("Notion endpoint initialized successfully")
         except Exception as e:
             log.warning(f"Notion endpoint not available: {e}")
         
@@ -57,7 +57,7 @@ class DebuglyIssueManager:
         if not self.endpoints:
             log.error("WARNING: No endpoints are configured or enabled! Speak to your administrator.")
         else:
-            log.info(f"Initialized {len(self.endpoints)} endpoint(s)")
+            log.debug(f"Initialized {len(self.endpoints)} endpoint(s)")
 
     def collect_data(self):
         data = {}
@@ -98,7 +98,7 @@ class DebuglyIssueManager:
                     result = endpoint.submit(issue, progress_callback=progress_callback)
                     results.append(result)
                     endpoint_results.append((endpoint, result))
-                    log.info(f"Successfully submitted to {endpoint.__class__.__name__}")
+                    log.debug(f"Successfully submitted to {endpoint.__class__.__name__}")
                     
                     # Emit progress for endpoint completion
                     if progress_callback:

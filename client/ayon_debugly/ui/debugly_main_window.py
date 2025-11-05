@@ -44,10 +44,10 @@ class CollectorWorker(QtCore.QObject):
         """Run the collector in the background thread"""
         log.debug(f"Worker.run() called for {self.collector_name}")
         try:
-            log.info(f"Starting collector: {self.collector_name}")
+            log.debug(f"Starting collector: {self.collector_name}")
             collector = self.collector_class()
             data = collector.collect()
-            log.info(f"Collector {self.collector_name} completed successfully")
+            log.debug(f"Collector {self.collector_name} completed successfully")
             log.debug(f"Emitting finished signal for {self.collector_name}")
             self.finished.emit(self.collector_name, data)
         except Exception as e:
@@ -75,7 +75,7 @@ class SubmissionWorker(QtCore.QObject):
     def run(self):
         """Submit the report in the background thread"""
         try:
-            log.info("Starting report submission...")
+            log.debug("Starting report submission...")
             self.progress.emit("Starting report submission...", 0, 100)
             
             # Debug: Log the collected metadata before submission
@@ -91,7 +91,7 @@ class SubmissionWorker(QtCore.QObject):
                 progress_callback=self.progress.emit  # Pass progress callback
             )
             
-            log.info(f"Report submitted successfully to {len(results)} endpoint(s)")
+            log.debug(f"Report submitted successfully to {len(results)} endpoint(s)")
             self.progress.emit("Report submitted successfully!", 100, 100)
             self.finished.emit(results)
         except Exception as e:
@@ -151,7 +151,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Setup collectors in background after UI is shown
         QtCore.QTimer.singleShot(100, self._setup_collectors_async)
         
-        log.info("DebuglyMainWindow initialized")
+        log.debug("DebuglyMainWindow initialized")
 
     def setup_ui(self):
         main_layout = QtWidgets.QVBoxLayout(self)
@@ -267,7 +267,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             for collector_name, collector_class in collector_pairs:
                 self._start_collector_thread(collector_name, collector_class)
             
-            log.info(f"Started {total_collectors} collectors in background threads")
+            log.debug(f"Started {total_collectors} collectors in background threads")
             
         except Exception as e:
             log.error(f"Failed to setup collectors: {e}")
@@ -348,7 +348,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Update the collected info widget
         self._update_collected_info_widget()
         
-        log.info("All collectors completed successfully")
+        log.debug("All collectors completed successfully")
 
     def _update_log_list_from_data(self, data):
         """Update log list widget from collected data"""
@@ -367,7 +367,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.logListView.setModel(self.log_model)
             # Make the list view read-only
             self.logListView.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-            log.info(f"Loaded {len(log_files)} log files into log list")
+            log.debug(f"Loaded {len(log_files)} log files into log list")
         except Exception as e:
             log.error(f"Failed to update log list: {e}")
             log.error(traceback.format_exc())
@@ -892,7 +892,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 self.statusLabel.setText(
                     f"Full screenshot taken and added: {os.path.basename(new_name)}"
                 )
-                log.info(f"Full screenshot taken and added: {new_name}")
+                log.debug(f"Full screenshot taken and added: {new_name}")
             else:
                 self.statusLabel.setText("Failed to save screenshot")
                 log.error("Failed to save screenshot")
@@ -994,13 +994,13 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 # Take screenshot using screen-specific coordinates
                 cropped_pixmap = marquee_screen.grabWindow(0, x, y, width, height)
                 
-                log.info("=== AYON-STYLE SCREENSHOT ===")
-                log.info(f"Marquee selection rect: {rect}")
-                log.info(f"Screen geometry: {screen_rect}")
-                log.info(f"Screen-relative coordinates: ({x}, {y}, {width}, {height})")
-                log.info(f"Using screen.grabWindow(0, {x}, {y}, {width}, {height})")
-                log.info(f"Cropped pixmap size: {cropped_pixmap.size()}")
-                log.info("=== END DEBUG INFO ===")
+                log.debug("=== AYON-STYLE SCREENSHOT ===")
+                log.debug(f"Marquee selection rect: {rect}")
+                log.debug(f"Screen geometry: {screen_rect}")
+                log.debug(f"Screen-relative coordinates: ({x}, {y}, {width}, {height})")
+                log.debug(f"Using screen.grabWindow(0, {x}, {y}, {width}, {height})")
+                log.debug(f"Cropped pixmap size: {cropped_pixmap.size()}")
+                log.debug("=== END DEBUG INFO ===")
                 
                 # Generate unique filename
                 new_name = self._generate_screenshot_name()
@@ -1015,7 +1015,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                         self.screenshot_carousel.add_screenshot(new_name)
                     
                     self.statusLabel.setText(f"Area screenshot added: {os.path.basename(new_name)}")
-                    log.info(f"Area screenshot taken and added: {new_name}")
+                    log.debug(f"Area screenshot taken and added: {new_name}")
                 else:
                     self.statusLabel.setText("Failed to save area screenshot")
                     log.error("Failed to save area screenshot")
@@ -1152,10 +1152,10 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         show_success_dialog(results, self)
         
         self.statusLabel.setText(f"Report submitted to {len(results)} endpoint(s)")
-        log.info(f"Report submitted to {len(results)} endpoint(s)")
+        log.debug(f"Report submitted to {len(results)} endpoint(s)")
         
         # Close the Debugly window after successful submission
-        log.info("Closing Debugly window after successful submission")
+        log.debug("Closing Debugly window after successful submission")
         self.close()
 
     def _on_submission_error(self, error_message):
@@ -1474,7 +1474,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             count = len([k for k in self.collected_metadata.keys() if k != "log_files"])
             self.collected_info_header.setText(f"ℹ️ Collected Info ({count} sections)")
             
-            log.info(f"Updated collected info widget with {count} metadata sections")
+            log.debug(f"Updated collected info widget with {count} metadata sections")
         except Exception as e:
             log.error(f"Failed to update collected info widget: {e}")
             error_label = QtWidgets.QLabel(f"Error displaying metadata: {e}")

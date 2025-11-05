@@ -30,7 +30,7 @@ class NotionService:
         self.base_url = "https://api.notion.com/v1"
         self._data_source_id = None
 
-        log.info(
+        log.debug(
             f"NotionService initialized with database_id: {database_id[:8]}..., version: {self.notion_version}"
         )
         log.debug(f"Token length: {len(token) if token else 0}")
@@ -44,15 +44,15 @@ class NotionService:
             log.warning(f"Database ID format may be invalid: {database_id}")
             log.warning("Expected format: 32 hex characters (with or without dashes)")
 
-        log.info("Using 2025-09-03 API - data source operations")
+        log.debug("Using 2025-09-03 API - data source operations")
 
     def test_connection(self) -> dict[str, Any]:
         """Test the Notion API connection and database access."""
-        log.info("Testing Notion API connection...")
+        log.debug("Testing Notion API connection...")
 
         # First test basic network connectivity
         try:
-            log.info("Testing basic network connectivity to api.notion.com...")
+            log.debug("Testing basic network connectivity to api.notion.com...")
             import socket
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -65,7 +65,7 @@ class NotionService:
                     "success": False,
                     "error": f"Cannot connect to api.notion.com:443 (network error: {result}). Check firewall/proxy settings.",
                 }
-            log.info("✓ Basic network connectivity to api.notion.com:443 successful")
+            log.debug("✓ Basic network connectivity to api.notion.com:443 successful")
         except Exception as e:
             return {
                 "success": False,
@@ -77,10 +77,12 @@ class NotionService:
             url = f"{self.base_url}/users/me"
             headers = self._headers()
 
-            log.info("Testing Notion API authentication...")
+            log.debug("Testing Notion API authentication...")
             log.debug("Testing user endpoint with timeout=30 seconds...")
             resp = requests.get(
-                url, headers=headers, timeout=(30, 600)  # 30s connect, 10min read
+                url,
+                headers=headers,
+                timeout=(30, 600),  # 30s connect, 10min read
             )  # 5s connect, 30s read
             log.debug(f"User endpoint response: {resp.status_code}")
 
@@ -97,17 +99,21 @@ class NotionService:
                 }
 
             user_data = resp.json()
-            log.info(f"✓ Connected as: {user_data.get('name', 'Unknown user')}")
+            log.debug(f"✓ Connected as: {user_data.get('name', 'Unknown user')}")
 
             # Test database access with data source discovery
             try:
-                log.info("Testing database access...")
+                log.debug("Testing database access...")
                 data_source_id = self._get_data_source_id()
                 if data_source_id:
-                    log.info(f"✓ Successfully discovered data source ID: {data_source_id[:8]}...")
+                    log.debug(
+                        f"✓ Successfully discovered data source ID: {data_source_id[:8]}..."
+                    )
                     # Test database properties access
                     properties = self._get_database_properties()
-                    log.info(f"✓ Database accessible with {len(properties)} properties")
+                    log.debug(
+                        f"✓ Database accessible with {len(properties)} properties"
+                    )
                     return {
                         "success": True,
                         "user": user_data.get("name", "Unknown"),
@@ -119,7 +125,9 @@ class NotionService:
                     log.warning("No data source found, testing database fallback...")
                     # Test database properties access
                     properties = self._get_database_properties()
-                    log.info(f"✓ Database accessible with {len(properties)} properties")
+                    log.debug(
+                        f"✓ Database accessible with {len(properties)} properties"
+                    )
                     return {
                         "success": True,
                         "user": user_data.get("name", "Unknown"),
@@ -165,7 +173,7 @@ class NotionService:
             log.debug(f"Using cached data_source_id: {self._data_source_id[:8]}...")
             return self._data_source_id
 
-        log.info(f"Discovering data source ID for database: {self.database_id[:8]}...")
+        log.debug(f"Discovering data source ID for database: {self.database_id[:8]}...")
         url = f"{self.base_url}/databases/{self.database_id}"
         headers = self._headers()
 
@@ -189,11 +197,11 @@ class NotionService:
             data = resp.json()
             log.debug(f"Database response keys: {list(data.keys())}")
             log.debug(f"Full database response: {data}")
-            
+
             # Check for data_sources field (2025-09-03 API)
             if "data_sources" in data:
                 data_sources = data.get("data_sources", [])
-                log.info(f"Found {len(data_sources)} data sources in database")
+                log.debug(f"Found {len(data_sources)} data sources in database")
                 log.debug(f"Data sources: {data_sources}")
 
                 if not data_sources:
@@ -206,11 +214,15 @@ class NotionService:
                 self._data_source_id = selected_source["id"]
                 source_name = selected_source.get("name", "Unknown")
 
-                log.info(f"✓ Selected data source: '{source_name}' (ID: {self._data_source_id[:8]}...)")
+                log.debug(
+                    f"✓ Selected data source: '{source_name}' (ID: {self._data_source_id[:8]}...)"
+                )
                 return self._data_source_id
             else:
                 log.warning("No 'data_sources' field found in database response")
-                log.warning("This database may not support 2025-09-03 API - falling back to database_id")
+                log.warning(
+                    "This database may not support 2025-09-03 API - falling back to database_id"
+                )
                 log.debug(f"Database response: {data}")
                 # For databases without data sources, we'll use database_id directly
                 return None
@@ -231,7 +243,9 @@ class NotionService:
             data_source_id = self._get_data_source_id()
             if data_source_id:
                 url = f"{self.base_url}/data_sources/{data_source_id}"
-                log.debug(f"Getting properties from data source: {data_source_id[:8]}...")
+                log.debug(
+                    f"Getting properties from data source: {data_source_id[:8]}..."
+                )
                 resp = requests.get(url, headers=self._headers(), timeout=(30, 600))
                 resp.raise_for_status()
                 data = resp.json()
@@ -241,7 +255,9 @@ class NotionService:
             else:
                 # Fallback to database endpoint
                 url = f"{self.base_url}/databases/{self.database_id}"
-                log.debug(f"Getting properties from database: {self.database_id[:8]}...")
+                log.debug(
+                    f"Getting properties from database: {self.database_id[:8]}..."
+                )
                 resp = requests.get(url, headers=self._headers(), timeout=(30, 600))
                 resp.raise_for_status()
                 data = resp.json()
@@ -267,7 +283,7 @@ class NotionService:
         blocks: Optional[list[dict[str, Any]]] = None,
         title_property: Optional[str] = None,
     ) -> dict[str, str]:
-        log.info(f"Starting submit_issue with title: '{title[:50]}...'")
+        log.debug(f"Starting submit_issue with title: '{title[:50]}...'")
         log.debug(f"User message length: {len(user_message) if user_message else 0}")
         log.debug(
             f"Collected data keys: {list(collected_data.keys()) if collected_data else []}"
@@ -298,29 +314,25 @@ class NotionService:
         # 2025-09-03 API: Try data_source_id first, fallback to database_id
         # Note: children are added separately after page creation
         data_source_id = self._get_data_source_id()
-        
+
         if data_source_id:
             # Use data_source_id (2025-09-03 API approach)
             payload = {
-                "parent": {
-                    "type": "data_source_id",
-                    "data_source_id": data_source_id
-                },
+                "parent": {"type": "data_source_id", "data_source_id": data_source_id},
                 "properties": properties,
                 "icon": {"type": "emoji", "emoji": "❓"},
             }
-            log.info(f"Using data_source_id for page creation: {data_source_id[:8]}...")
+            log.debug(
+                f"Using data_source_id for page creation: {data_source_id[:8]}..."
+            )
         else:
             # Fallback to database_id (still supported in 2025-09-03)
             payload = {
-                "parent": {
-                    "type": "database_id",
-                    "database_id": self.database_id
-                },
+                "parent": {"type": "database_id", "database_id": self.database_id},
                 "properties": properties,
                 "icon": {"type": "emoji", "emoji": "❓"},
             }
-            log.info(f"Using database_id for page creation: {self.database_id[:8]}...")
+            log.debug(f"Using database_id for page creation: {self.database_id[:8]}...")
         log.debug(f"Page creation payload: {payload}")
         log.debug(f"Page creation payload parent: {payload['parent']}")
         log.debug(f"Page creation payload properties: {payload['properties']}")
@@ -331,12 +343,12 @@ class NotionService:
             f"Page creation payload properties count: {len(payload['properties'])}"
         )
         log.debug(f"Children will be added after page creation: {len(children)} blocks")
-        
+
         # Debug the exact request being made
-        log.info(f"Making Notion API request to: {self.base_url}/pages")
-        log.info(f"Request headers: {self._headers()}")
-        log.info(f"Request payload type: {type(payload)}")
-        log.info(f"Request payload size: {len(str(payload))} characters")
+        log.debug(f"Making Notion API request to: {self.base_url}/pages")
+        log.debug(f"Request headers: {self._headers()}")
+        log.debug(f"Request payload type: {type(payload)}")
+        log.debug(f"Request payload size: {len(str(payload))} characters")
 
         headers = self._headers().copy()
         if idempotency_key:
@@ -369,27 +381,31 @@ class NotionService:
                     log.error(f"Request URL: {url}")
                     log.error(f"Request headers: {headers}")
                     log.error(f"Request payload: {payload}")
-                    
+
                     # Try to parse error response for more details
                     try:
                         error_data = resp.json()
                         log.error(f"Error response JSON: {error_data}")
                     except:
                         log.error(f"Error response is not JSON: {resp.text}")
-                    
+
                     # Provide specific error messages for common API issues
                     if resp.status_code == 400:
                         error_text = resp.text.lower()
                         log.error(f"400 Error details: {error_text}")
-                        
+
                         if "data_source_id" in error_text:
-                            log.error("Data source ID error - trying database_id fallback")
+                            log.error(
+                                "Data source ID error - trying database_id fallback"
+                            )
                             # Try fallback to database_id if data_source_id failed
                             if payload["parent"]["type"] == "data_source_id":
-                                log.info("Retrying with database_id instead of data_source_id")
+                                log.debug(
+                                    "Retrying with database_id instead of data_source_id"
+                                )
                                 payload["parent"] = {
                                     "type": "database_id",
-                                    "database_id": self.database_id
+                                    "database_id": self.database_id,
                                 }
                                 continue
                         elif "parent" in error_text:
@@ -397,15 +413,17 @@ class NotionService:
                         elif "properties" in error_text:
                             log.error("Properties error - check database schema")
                         elif "invalid" in error_text:
-                            log.error("Invalid request format - check API version compatibility")
-                    
+                            log.error(
+                                "Invalid request format - check API version compatibility"
+                            )
+
                     # Instead of just raising, preserve the detailed error information
                     try:
                         error_data = resp.json()
                         detailed_error = f"Status {resp.status_code}: {error_data}"
                     except:
                         detailed_error = f"Status {resp.status_code}: {resp.text}"
-                    
+
                     # Raise with detailed error information
                     raise Exception(f"Notion API request failed: {detailed_error}")
 
@@ -438,15 +456,15 @@ class NotionService:
 
         page_id = data.get("id", "")
         url = data.get("url", "")
-        log.info(f"Successfully created page with ID: {page_id[:8]}...")
-        log.info(f"Page URL: {url}")
+        log.debug(f"Successfully created page with ID: {page_id[:8]}...")
+        log.debug(f"Page URL: {url}")
 
         # Add children blocks after page creation
         if children and len(children) > 0:
-            log.info(f"Adding {len(children)} children blocks to page...")
+            log.debug(f"Adding {len(children)} children blocks to page...")
             try:
                 self._add_children_to_page(page_id, children)
-                log.info("Successfully added children blocks to page")
+                log.debug("Successfully added children blocks to page")
             except Exception as e:
                 log.warning(f"Failed to add children blocks: {e}")
                 # Don't fail the whole submission for this
@@ -456,7 +474,7 @@ class NotionService:
 
         # Always upload attachments separately after page creation to avoid timeouts
         if attachments_zip_b64 and page_id:
-            log.info("Starting asynchronous attachment upload process...")
+            log.debug("Starting asynchronous attachment upload process...")
             if async_attachments:
                 # Start attachment upload in background thread
                 t = threading.Thread(
@@ -465,13 +483,13 @@ class NotionService:
                     daemon=True,
                 )
                 t.start()
-                log.info("Background attachment upload started")
+                log.debug("Background attachment upload started")
             else:
                 # Upload attachments synchronously (for testing/debugging)
-                log.info("Starting synchronous attachment upload...")
+                log.debug("Starting synchronous attachment upload...")
                 try:
                     self._attach_zip_to_page(attachments_zip_b64, page_id)
-                    log.info("Synchronous attachment upload completed")
+                    log.debug("Synchronous attachment upload completed")
                 except Exception as e:
                     log.warning(f"Synchronous attachment upload failed: {e}")
 
@@ -481,17 +499,15 @@ class NotionService:
         """Add children blocks to a Notion page after creation."""
         if not children:
             return
-        
+
         log.debug(f"Adding {len(children)} children to page {page_id[:8]}...")
-        
+
         # Notion API requires children to be added via the blocks endpoint
         url = f"{self.base_url}/blocks/{page_id}/children"
         headers = self._headers()
-        
-        payload = {
-            "children": children
-        }
-        
+
+        payload = {"children": children}
+
         try:
             resp = requests.patch(url, headers=headers, json=payload, timeout=(30, 600))
             resp.raise_for_status()
@@ -542,7 +558,7 @@ class NotionService:
             user_id = self._get_current_user_id(collected_data)
             if user_id:
                 properties["Submitted By"] = {"people": [{"id": user_id}]}
-        
+
         # Add Name to Vote - will be handled after page creation
         # (We can't get existing values before the page exists)
 
@@ -558,58 +574,69 @@ class NotionService:
                 if isinstance(user_data, dict) and "user" in user_data:
                     user_data = user_data["user"]
                 user_email = user_data.get("ayon_email")
-            
+
             if not user_email:
-                log.warning("No user email found in collected data - cannot find real user")
+                log.warning(
+                    "No user email found in collected data - cannot find real user"
+                )
                 return None
-            
-            log.info(f"Looking for Notion user with email: {user_email}")
-            
+
+            log.debug(f"Looking for Notion user with email: {user_email}")
+
             # List all users in the workspace to find the real user by email
             headers = self._headers()
-            response = requests.get(f"{self.base_url}/users", headers=headers, timeout=600)
-            
+            response = requests.get(
+                f"{self.base_url}/users", headers=headers, timeout=600
+            )
+
             if response.status_code == 200:
                 users_data = response.json()
                 users = users_data.get("results", [])
-                
+
                 log.debug(f"Found {len(users)} users in Notion workspace")
-                
+
                 # Find user by email
                 for user in users:
                     user_id = user.get("id")
                     user_name = user.get("name", "Unknown")
                     user_type = user.get("type", "unknown")
-                    
+
                     # Check person email
                     if user_type == "person":
                         person_data = user.get("person", {})
                         person_email = person_data.get("email", "")
-                        
+
                         if person_email.lower() == user_email.lower():
-                            log.info(f"Found matching user: {user_name} (ID: {user_id[:8]}..., email: {person_email})")
+                            log.info(
+                                f"Found matching user: {user_name} (ID: {user_id[:8]}..., email: {person_email})"
+                            )
                             return user_id
-                    
-                    log.debug(f"User: {user_name} (ID: {user_id[:8]}..., type: {user_type}, email: {person_email if user_type == 'person' else 'N/A'})")
-                
+
+                    log.debug(
+                        f"User: {user_name} (ID: {user_id[:8]}..., type: {user_type}, email: {person_email if user_type == 'person' else 'N/A'})"
+                    )
+
                 log.warning(f"No Notion user found with email: {user_email}")
                 return None
             else:
-                log.warning(f"Failed to list users from Notion API: {response.status_code}")
+                log.warning(
+                    f"Failed to list users from Notion API: {response.status_code}"
+                )
                 return None
         except Exception as e:
             log.warning(f"Failed to get current user ID from Notion API: {e}")
             return None
 
-
-    def _get_existing_multi_select_values(self, page_id: str, property_name: str) -> list[str]:
+    def _get_existing_multi_select_values(
+        self, page_id: str, property_name: str
+    ) -> list[str]:
         """Get existing values from a multi-select property."""
         try:
             headers = self._headers()
             response = requests.get(
                 f"{self.base_url}/pages/{page_id}/properties/{property_name}",
                 headers=headers,
-                timeout=600  # 10 minutes
+                timeout=600,  # 10 minutes
             )
             if response.status_code == 200:
                 data = response.json()
@@ -627,36 +654,36 @@ class NotionService:
             if "Add Name to Vote" not in db_props:
                 log.debug("No 'Add Name to Vote' field found in database")
                 return
-            
+
             user_id = self._get_current_user_id(collected_data)
             if not user_id:
                 log.warning("Could not determine current user for vote field")
                 return
-            
+
             log.debug(f"Adding user {user_id[:8]}... to vote field")
-            
+
             # For a new page, just add the current user (no existing values to preserve)
             payload = {
-                "properties": {
-                    "Add Name to Vote": {
-                        "multi_select": [{"id": user_id}]
-                    }
-                }
+                "properties": {"Add Name to Vote": {"multi_select": [{"id": user_id}]}}
             }
-            
+
             headers = self._headers()
             response = requests.patch(
                 f"{self.base_url}/pages/{page_id}",
                 headers=headers,
                 json=payload,
-                timeout=(30, 600)  # 30s connect, 10min read
+                timeout=(30, 600),  # 30s connect, 10min read
             )
-        
+
             if response.status_code == 200:
-                log.info(f"Successfully updated 'Add Name to Vote' field for page {page_id[:8]}...")
+                log.debug(
+                    f"Successfully updated 'Add Name to Vote' field for page {page_id[:8]}..."
+                )
             else:
-                log.warning(f"Failed to update 'Add Name to Vote' field: {response.status_code} - {response.text}")
-                
+                log.warning(
+                    f"Failed to update 'Add Name to Vote' field: {response.status_code} - {response.text}"
+                )
+
         except Exception as e:
             log.warning(f"Failed to update vote field: {e}")
 
@@ -950,8 +977,8 @@ class NotionService:
         Extract and upload files from ZIP to Notion page.
         Process files one by one to avoid memory issues with large attachments.
         """
-        log.info(f"Starting attachment upload for page {page_id[:8]}...")
-        
+        log.debug(f"Starting attachment upload for page {page_id[:8]}...")
+
         try:
             raw = base64.b64decode(attachments_zip_b64)
             log.debug(f"Decoded ZIP size: {len(raw)} bytes")
@@ -963,24 +990,28 @@ class NotionService:
             with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
                 uploaded_files: list[dict[str, Any]] = []
                 file_list = zf.infolist()
-                
+
                 # Filter files to only include meaningful attachments
                 relevant_files = [
-                    zi for zi in file_list
-                    if not zi.is_dir() and (
+                    zi
+                    for zi in file_list
+                    if not zi.is_dir()
+                    and (
                         zi.filename.startswith("attachments/")
                         or zi.filename.startswith("screenshot/")
                         or zi.filename.startswith("logs/")
                     )
                 ]
-                
-                log.info(f"Found {len(relevant_files)} files to upload (out of {len(file_list)} total)")
+
+                log.debug(
+                    f"Found {len(relevant_files)} files to upload (out of {len(file_list)} total)"
+                )
 
                 def guess_content_type(name: str) -> str:
                     name_l = name.lower()
                     content_types = {
                         ".png": "image/png",
-                        ".jpg": "image/jpeg", 
+                        ".jpg": "image/jpeg",
                         ".jpeg": "image/jpeg",
                         ".gif": "image/gif",
                         ".pdf": "application/pdf",
@@ -998,11 +1029,15 @@ class NotionService:
                 # Process files one by one
                 for i, zi in enumerate(relevant_files):
                     try:
-                        log.debug(f"Processing file {i+1}/{len(relevant_files)}: {zi.filename}")
-                        
+                        log.debug(
+                            f"Processing file {i + 1}/{len(relevant_files)}: {zi.filename}"
+                        )
+
                         # Check file size (Notion has limits)
                         if zi.file_size > 100 * 1024 * 1024:  # 100MB limit
-                            log.warning(f"Skipping large file {zi.filename} ({zi.file_size} bytes)")
+                            log.warning(
+                                f"Skipping large file {zi.filename} ({zi.file_size} bytes)"
+                            )
                             continue
 
                         file_bytes = zf.read(zi)
@@ -1015,27 +1050,37 @@ class NotionService:
                             display_name = base_name
 
                         content_type = guess_content_type(display_name)
-                        
-                        log.debug(f"Uploading {display_name} ({len(file_bytes)} bytes, {content_type})")
-                        file_id = self._upload_file_bytes(display_name, content_type, file_bytes)
-                        
-                        uploaded_files.append({
-                            "type": "file_upload",
-                            "file_upload": {"id": file_id},
-                            "name": display_name,
-                        })
-                        
-                        log.debug(f"Successfully uploaded {display_name} with ID: {file_id[:8]}...")
-                        
+
+                        log.debug(
+                            f"Uploading {display_name} ({len(file_bytes)} bytes, {content_type})"
+                        )
+                        file_id = self._upload_file_bytes(
+                            display_name, content_type, file_bytes
+                        )
+
+                        uploaded_files.append(
+                            {
+                                "type": "file_upload",
+                                "file_upload": {"id": file_id},
+                                "name": display_name,
+                            }
+                        )
+
+                        log.debug(
+                            f"Successfully uploaded {display_name} with ID: {file_id[:8]}..."
+                        )
+
                     except Exception as e:
                         log.warning(f"Failed to upload {zi.filename}: {e}")
                         continue
 
                 # Update page with all uploaded files at once
                 if uploaded_files:
-                    log.info(f"Updating page with {len(uploaded_files)} uploaded files...")
+                    log.debug(
+                        f"Updating page with {len(uploaded_files)} uploaded files..."
+                    )
                     self._update_page_attachments(page_id, uploaded_files)
-                    log.info("Successfully updated page with attachments")
+                    log.debug("Successfully updated page with attachments")
                 else:
                     log.warning("No files were successfully uploaded")
 
@@ -1044,6 +1089,7 @@ class NotionService:
         except Exception as e:
             log.error(f"Error processing ZIP file: {e}")
             import traceback
+
             log.error(f"Traceback: {traceback.format_exc()}")
 
     def _upload_file_bytes(
@@ -1055,10 +1101,10 @@ class NotionService:
         """
         file_size = len(file_bytes)
         log.debug(f"Starting upload for {file_name} ({file_size} bytes)")
-        
+
         # Step 1: Create file upload object
         create_payload = {"filename": file_name, "content_type": content_type}
-        
+
         try:
             resp = requests.post(
                 f"{self.base_url}/file_uploads",
@@ -1067,13 +1113,13 @@ class NotionService:
                 timeout=(30, 600),  # 30s connect, 10min read
             )
             resp.raise_for_status()
-            
+
             info = resp.json()
             file_upload_id = info["id"]
             upload_url = info["upload_url"]
-            
+
             log.debug(f"Created upload object {file_upload_id[:8]}... for {file_name}")
-            
+
         except Exception as e:
             log.error(f"Failed to create upload object for {file_name}: {e}")
             raise
@@ -1083,7 +1129,7 @@ class NotionService:
             # Use very generous timeout for file uploads (10 minutes)
             upload_timeout = 600  # 10 minutes for all file uploads
             log.debug(f"Using upload timeout: {upload_timeout}s for {file_size} bytes")
-            
+
             files = {"file": (file_name, file_bytes, content_type)}
             resp2 = requests.post(
                 upload_url,
@@ -1095,10 +1141,10 @@ class NotionService:
                 timeout=(30, upload_timeout),  # 30s connect, 10min read timeout
             )
             resp2.raise_for_status()
-            
+
             log.debug(f"Successfully uploaded content for {file_name}")
             return file_upload_id
-            
+
         except requests.exceptions.Timeout as e:
             log.error(f"Upload timeout for {file_name} after {upload_timeout}s: {e}")
             raise Exception(f"File upload timeout for {file_name}")
@@ -1110,33 +1156,32 @@ class NotionService:
         """Add a file block to a Notion page."""
         try:
             headers = self._headers()
-            
+
             # Create a file block
             block_data = {
                 "children": [
                     {
                         "object": "block",
                         "type": "file",
-                        "file": {
-                            "type": "file_upload",
-                            "file_upload": {"id": file_id}
-                        }
+                        "file": {"type": "file_upload", "file_upload": {"id": file_id}},
                     }
                 ]
             }
-            
+
             response = requests.patch(
                 f"{self.base_url}/blocks/{page_id}/children",
                 headers=headers,
                 json=block_data,
-                timeout=(30, 600)  # 30s connect, 10min read
+                timeout=(30, 600),  # 30s connect, 10min read
             )
-            
+
             if response.status_code != 200:
-                log.warning(f"Failed to add file block for {filename}: {response.status_code} - {response.text}")
+                log.warning(
+                    f"Failed to add file block for {filename}: {response.status_code} - {response.text}"
+                )
             else:
                 log.debug(f"Successfully added file block for {filename}")
-                
+
         except Exception as e:
             log.error(f"Failed to add file block for {filename}: {e}")
 
@@ -1144,34 +1189,40 @@ class NotionService:
         self, page_id: str, uploaded_files: list[dict[str, Any]]
     ):
         """Update page with attachment files by appending to existing attachments."""
-        log.info(f"Updating page {page_id[:8]}... with {len(uploaded_files)} new attachments")
-        
+        log.debug(
+            f"Updating page {page_id[:8]}... with {len(uploaded_files)} new attachments"
+        )
+
         try:
             # Get existing attachments
             existing_files = self._get_existing_attachments(page_id)
             log.debug(f"Found {len(existing_files)} existing attachments")
-            
+
             # Combine existing files with new files
             all_files = existing_files + uploaded_files
             log.debug(f"Total files after adding new ones: {len(all_files)}")
-            
+
         except Exception as e:
-            log.warning(f"Failed to get existing attachments, using only new files: {e}")
+            log.warning(
+                f"Failed to get existing attachments, using only new files: {e}"
+            )
             all_files = uploaded_files
-        
+
         # Update the page with all files
         payload = {"properties": {"Attachments": {"files": all_files}}}
-        
+
         try:
             resp = requests.patch(
                 f"{self.base_url}/pages/{page_id}",
                 headers=self._headers(),
                 json=payload,
-                timeout=30
+                timeout=30,
             )
             resp.raise_for_status()
-            log.debug(f"Successfully updated page with {len(all_files)} total attachments")
-            
+            log.debug(
+                f"Successfully updated page with {len(all_files)} total attachments"
+            )
+
         except Exception as e:
             log.error(f"Failed to update page attachments: {e}")
             raise
@@ -1183,7 +1234,7 @@ class NotionService:
             response = requests.get(
                 f"{self.base_url}/pages/{page_id}/properties/Attachments",
                 headers=headers,
-                timeout=30
+                timeout=30,
             )
             if response.status_code == 200:
                 data = response.json()
@@ -1191,7 +1242,9 @@ class NotionService:
                 log.debug(f"Retrieved {len(files)} existing attachments")
                 return files
             else:
-                log.warning(f"Failed to get existing attachments: {response.status_code}")
+                log.warning(
+                    f"Failed to get existing attachments: {response.status_code}"
+                )
                 return []
         except Exception as e:
             log.warning(f"Failed to get existing attachments: {e}")
@@ -1203,12 +1256,19 @@ class NotionService:
         Runs in background thread.
         """
         try:
-            log.info(f"Background attachment upload starting for page {page_id[:8]}...")
+            log.debug(
+                f"Background attachment upload starting for page {page_id[:8]}..."
+            )
             self._attach_zip_to_page(attachments_zip_b64, page_id)
-            log.info(f"Background attachment upload completed for page {page_id[:8]}...")
+            log.debug(
+                f"Background attachment upload completed for page {page_id[:8]}..."
+            )
         except Exception as e:
             # Background failures are non-fatal but should be logged
-            log.error(f"Background attachment upload failed for page {page_id[:8]}...: {e}")
+            log.error(
+                f"Background attachment upload failed for page {page_id[:8]}...: {e}"
+            )
             import traceback
+
             log.error(f"Background upload traceback: {traceback.format_exc()}")
             # Don't raise - this runs in background thread

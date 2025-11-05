@@ -15,16 +15,16 @@ from ayon_debugly.version import __version__
 
 class DebuglyApp:
     def __init__(self):
-        log.info("Initializing DebuglyApp...")
+        log.debug("Initializing DebuglyApp...")
         self.settings = self.get_settings()
         self.issue_manager = DebuglyIssueManager(settings=self.settings)
-        log.info("DebuglyApp initialized with issue manager")
+        log.debug("DebuglyApp initialized with issue manager")
 
     def get_settings(self):
-        log.info("Fetching settings from AYON server...")
+        log.debug("Fetching settings from AYON server...")
         try:
             settings = ayon_api.get_addon_settings("debugly", __version__)
-            log.info("Loaded settings from AYON server: %s", settings)
+            log.debug("Loaded settings from AYON server: %s", settings)
 
             # Debug: Check if notion settings are present
             if isinstance(settings, dict) and "endpoints" in settings:
@@ -32,7 +32,7 @@ class DebuglyApp:
                 if notion_settings:
                     notion_config = notion_settings.get("notion", {})
                     database_id = notion_config.get("database_id", "")
-                    log.info(
+                    log.debug(
                         f"Notion database_id from server: '{database_id}' (length: {len(database_id)})"
                     )
                     if not database_id:
@@ -59,9 +59,9 @@ class DebuglyApp:
         collected_data=None,
         progress_callback=None,
     ):
-        log.info("Submitting report...")
+        log.debug("Submitting report...")
         try:
-            log.info(
+            log.debug(
                 f"Building DebuglyIssue with {len(attachments or [])} attachments and {len(log_files or [])} log files."
             )
 
@@ -76,7 +76,7 @@ class DebuglyApp:
                 progress_callback,
             )
 
-            log.info(f"Report submitted to {len(results)} endpoint(s)")
+            log.debug(f"Report submitted to {len(results)} endpoint(s)")
             return results
         except Exception as e:
             log.error(f"Failed to submit report: {e}")
