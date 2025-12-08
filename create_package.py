@@ -106,9 +106,7 @@ def _get_yarn_executable() -> Union[str, None]:
     if platform.system().lower() == "windows":
         cmd = "where"
 
-    for line in subprocess.check_output(
-        [cmd, "yarn"], encoding="utf-8"
-    ).splitlines():
+    for line in subprocess.check_output([cmd, "yarn"], encoding="utf-8").splitlines():
         if not line or not os.path.exists(line):
             continue
         try:
@@ -201,9 +199,7 @@ def update_client_version(logger):
     if not ADDON_CLIENT_DIR:
         return
 
-    version_path: str = os.path.join(
-        CLIENT_ROOT, ADDON_CLIENT_DIR, "version.py"
-    )
+    version_path: str = os.path.join(CLIENT_ROOT, ADDON_CLIENT_DIR, "version.py")
     if not os.path.exists(version_path):
         logger.debug("Creating version.py in client directory")
 
@@ -220,9 +216,7 @@ def build_frontend():
     subprocess.run([yarn_executable, "install"], cwd=FRONTEND_ROOT)
     subprocess.run([yarn_executable, "build"], cwd=FRONTEND_ROOT)
     if not os.path.exists(FRONTEND_DIST_ROOT):
-        raise RuntimeError(
-            "Frontend build failed. Did not find 'dist' folder."
-        )
+        raise RuntimeError("Frontend build failed. Did not find 'dist' folder.")
 
 
 def get_client_files_mapping() -> List[Tuple[str, str]]:
@@ -311,9 +305,7 @@ def copy_client_code(output_dir: str, log: logging.Logger):
     """
     log.debug(f"Copying client for {ADDON_NAME}-{ADDON_VERSION}")
 
-    full_output_path = os.path.join(
-        output_dir, f"{ADDON_NAME}_{ADDON_VERSION}"
-    )
+    full_output_path = os.path.join(output_dir, f"{ADDON_NAME}_{ADDON_VERSION}")
     if os.path.exists(full_output_path):
         shutil.rmtree(full_output_path)
     os.makedirs(full_output_path, exist_ok=True)
@@ -391,9 +383,7 @@ def main(
     addon_version = ADDON_VERSION
 
     # Create bundle directory
-    bundle_dir = os.path.join(
-        output_dir or ".", f"{addon_name}-{addon_version}"
-    )
+    bundle_dir = os.path.join(output_dir or ".", f"{addon_name}-{addon_version}")
     os.makedirs(bundle_dir, exist_ok=True)
 
     # Store whether bundle was created in current directory for cleanup
@@ -432,9 +422,7 @@ def main(
         files_mapping.extend(get_base_files_mapping())
 
         if has_client_code:
-            files_mapping.append(
-                (get_client_zip_content(log), "private/client.zip")
-            )
+            files_mapping.append((get_client_zip_content(log), "private/client.zip"))
 
         # Skip server zipping
         if skip_zip:
@@ -470,10 +458,7 @@ if __name__ == "__main__":
         "--skip-zip",
         dest="skip_zip",
         action="store_true",
-        help=(
-            "Skip zipping server package and create only"
-            " server folder structure."
-        ),
+        help=("Skip zipping server package and create only server folder structure."),
     )
     parser.add_argument(
         "-o",

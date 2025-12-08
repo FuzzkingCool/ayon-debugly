@@ -466,7 +466,7 @@ class EndpointNotion(EndpointBase):
             raw_zip = base64.b64decode(attachments_zip_b64)
 
             with zipfile.ZipFile(io.BytesIO(raw_zip), "r") as zf:
-                # Get list of relevant files (same filtering as server-side)
+                # Get list of relevant files including system report
                 relevant_files = [
                     zi
                     for zi in zf.infolist()
@@ -475,6 +475,8 @@ class EndpointNotion(EndpointBase):
                         zi.filename.startswith("attachments/")
                         or zi.filename.startswith("screenshot/")
                         or zi.filename.startswith("logs/")
+                        or zi.filename == "collected_data.json"
+                        or zi.filename == "issue.json"
                     )
                 ]
 
@@ -593,7 +595,7 @@ class EndpointNotion(EndpointBase):
             raw_zip = base64.b64decode(attachments_zip_b64)
 
             with zipfile.ZipFile(io.BytesIO(raw_zip), "r") as zf:
-                # Get list of relevant files (same filtering as server-side)
+                # Get list of relevant files including system report
                 relevant_files = [
                     zi
                     for zi in zf.infolist()
@@ -602,6 +604,8 @@ class EndpointNotion(EndpointBase):
                         zi.filename.startswith("attachments/")
                         or zi.filename.startswith("screenshot/")
                         or zi.filename.startswith("logs/")
+                        or zi.filename == "collected_data.json"
+                        or zi.filename == "issue.json"
                     )
                 ]
 
