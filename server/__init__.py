@@ -11,8 +11,7 @@ try:
     from ayon_server.secrets import Secrets
     from ayon_server.settings import BaseSettingsModel
     from ayon_server.types import Field, OPModel
-
-    log.info("AYON server modules imported successfully")
+    # log.info("AYON server modules imported successfully")
 except Exception as e:
     log.error(f"Failed to import AYON server modules: {e}")
     raise

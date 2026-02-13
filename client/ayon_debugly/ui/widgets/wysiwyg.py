@@ -115,7 +115,7 @@ class WysiwygWidget(QtWidgets.QWidget):
                 log.debug(f"Available font families: {font_families}")
                 if font_families:
                     self.fontawesome_family = font_families[0]
-                    log.debug(f"Successfully loaded FontAwesome 7: {self.fontawesome_family}")
+                    # log.debug(f"Successfully loaded FontAwesome 7: {self.fontawesome_family}")
                     
                     # Test if the font is working by creating a test font
                     test_font = QtGui.QFont()

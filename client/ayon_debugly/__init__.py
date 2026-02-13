@@ -8,7 +8,7 @@ try:
     from ayon_debugly.debugly_issue import DebuglyIssue
     from ayon_debugly.debugly_issue_manager import DebuglyIssueManager
 
-    log.debug(f"Successfully loaded ayon_debugly {__version__}")
+    # log.debug(f"Successfully loaded ayon_debugly {__version__}")
 
     __all__ = (
         "__version__",
