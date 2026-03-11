@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "Debugly"
-version = "0.5.4"
+version = "0.6.0"
 description = "Debugly Addon"
 authors = ["Aleks Berland"]
 license = "MIT License"
