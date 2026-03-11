@@ -3,9 +3,10 @@ import os
 import traceback
 
 from ayon_core.addon import AYONAddon, ITrayAddon
-from ayon_core.lib import run_detached_process
-from qtpy import QtCore, QtGui, QtWidgets
+from ayon_core.lib import run_detached_ayon_launcher_process
+from qtpy import QtGui, QtWidgets
 
+from ayon_debugly.desktop_shortcut import create_staging_desktop_shortcut
 from ayon_debugly.lib import ADDON_ROOT
 from ayon_debugly.logger import log
 from ayon_debugly.ui.debugly_main_window import DebuglyMainWindow
@@ -19,15 +20,49 @@ class DebuglyMenuBuilder:
     def update_menu_contents(self, menu):
         menu.clear()
         # Add "Report an Issue" action
-        action = QtWidgets.QAction("Report an Issue", menu)
+        report_icon_path = os.path.join(ADDON_ROOT, "resources", "report.png")
+        if os.path.exists(report_icon_path):
+            action = QtWidgets.QAction(
+                QtGui.QIcon(report_icon_path), "Report an Issue", menu
+            )
+        else:
+            action = QtWidgets.QAction("Report an Issue", menu)
         action.triggered.connect(self.addon.show_report_window)
         menu.addAction(action)
-        
+
         # Add "Restart with DEBUG enabled" action
-        debug_action = QtWidgets.QAction("Restart with DEBUG enabled", menu)
+        debug_icon_path = os.path.join(ADDON_ROOT, "resources", "debug.png")
+        if os.path.exists(debug_icon_path):
+            debug_action = QtWidgets.QAction(
+                QtGui.QIcon(debug_icon_path), "Restart with DEBUG enabled", menu
+            )
+        else:
+            debug_action = QtWidgets.QAction("Restart with DEBUG enabled", menu)
         debug_action.triggered.connect(self.addon.restart_with_debug)
         menu.addAction(debug_action)
-        
+
+        # Add "Restart AYON to Staging Release" action
+        staging_icon_path = os.path.join(ADDON_ROOT, "resources", "AYON_icon_staging.png")
+        if os.path.exists(staging_icon_path):
+            staging_action = QtWidgets.QAction(
+                QtGui.QIcon(staging_icon_path), "Restart AYON to Staging Release", menu
+            )
+        else:
+            staging_action = QtWidgets.QAction("Restart AYON to Staging Release", menu)
+        staging_action.triggered.connect(self.addon.restart_to_staging)
+        menu.addAction(staging_action)
+
+        # Add "Create desktop shortcut (Staging)" action
+        shortcut_icon_path = os.path.join(ADDON_ROOT, "resources", "AYON_icon_staging.png")
+        if os.path.exists(shortcut_icon_path):
+            shortcut_action = QtWidgets.QAction(
+                QtGui.QIcon(shortcut_icon_path), "Create desktop shortcut (Staging)", menu
+            )
+        else:
+            shortcut_action = QtWidgets.QAction("Create desktop shortcut (Staging)", menu)
+        shortcut_action.triggered.connect(self.addon.create_staging_desktop_shortcut)
+        menu.addAction(shortcut_action)
+
         menu.addSeparator()
         # Add more actions/settings here as needed
 
@@ -98,6 +133,69 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
         if os.path.exists(icon_path):
             return QtGui.QIcon(icon_path)
         return QtGui.QIcon()  # fallback
+
+    def create_staging_desktop_shortcut(self):
+        """Create a desktop shortcut that launches AYON with --use-staging --verbose DEBUG."""
+        try:
+            success, message = create_staging_desktop_shortcut(ADDON_ROOT)
+            if success:
+                QtWidgets.QMessageBox.information(
+                    None,
+                    "Shortcut created",
+                    f"Desktop shortcut created:\n{message}",
+                )
+            else:
+                QtWidgets.QMessageBox.warning(
+                    None,
+                    "Shortcut creation failed",
+                    message,
+                )
+        except Exception as e:
+            log.error("Create desktop shortcut failed: %s", e)
+            log.error(traceback.format_exc())
+            QtWidgets.QMessageBox.critical(
+                None,
+                "Shortcut creation failed",
+                str(e),
+            )
+
+    def restart_to_staging(self):
+        """Restart AYON in staging release: create/update desktop shortcut, then relaunch with --use-staging."""
+        try:
+            log.debug("Restart to staging: creating/updating desktop shortcut")
+            success, message = create_staging_desktop_shortcut(ADDON_ROOT)
+            if success:
+                log.debug("Desktop shortcut created/updated: %s", message)
+            else:
+                log.warning("Desktop shortcut create/update failed (continuing): %s", message)
+
+            warning_dialog = QtWidgets.QMessageBox()
+            warning_dialog.setIcon(QtWidgets.QMessageBox.Warning)
+            warning_dialog.setWindowTitle("Restart to Staging")
+            warning_dialog.setText("AYON will close and reopen in staging release.")
+            warning_dialog.setInformativeText(
+                "Before proceeding, please save your work and close all AYON-integrated applications.\n\n"
+                "The current AYON instance will close and restart with --use-staging."
+            )
+            warning_dialog.setStandardButtons(
+                QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
+            )
+            warning_dialog.setDefaultButton(QtWidgets.QMessageBox.Cancel)
+
+            if warning_dialog.exec_() == QtWidgets.QMessageBox.Cancel:
+                log.debug("User cancelled restart to staging")
+                return
+
+            run_detached_ayon_launcher_process("--use-staging", "--verbose", "DEBUG")
+            QtWidgets.QApplication.quit()
+        except Exception as e:
+            log.error("Failed to restart AYON to staging: %s", e)
+            log.error(traceback.format_exc())
+            QtWidgets.QMessageBox.critical(
+                None,
+                "Restart Failed",
+                f"Failed to restart AYON to staging:\n{str(e)}",
+            )
 
     def show_report_window(self):
         try:
