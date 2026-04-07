@@ -220,31 +220,23 @@ def build_frontend():
 
 
 def get_client_files_mapping() -> List[Tuple[str, str]]:
-    """Get mapping of client files to their destinations."""
-    import os
+    """Get mapping of client files to their destinations.
+
+    Uses find_files_in_subdir which excludes __pycache__, .pyc, and dotfiles.
+    """
     from package import client_dir
 
-    # Add debug output using existing variables
-    print(f"\n=== Client directory name set to: '{client_dir}' ===\n")
-
-    # Use the existing directory variable names from the function
-    # Don't add the REPO_ROOT reference
-    client_dirpath = os.path.join("client")  # Use relative path
-
-    # Debug: print out all files in client directory
-    print(f"Client files in {client_dirpath}:")
-    if os.path.exists(client_dirpath):
-        for root, dirs, files in os.walk(client_dirpath):
-            for file in files:
-                print(f"  - {os.path.join(root, file)}")
-    else:
-        print(f"WARNING: Client directory not found at {client_dirpath}")
-
-    # Continue with the existing function code - don't modify the rest
     client_code_dir: str = os.path.join(CLIENT_ROOT, ADDON_CLIENT_DIR)
+    found = find_files_in_subdir(client_code_dir)
+
+    print(f"\n=== Client directory name set to: '{client_dir}' ===\n")
+    print("Client files to package (excludes __pycache__, .pyc):")
+    for _path, sub_path in found:
+        print(f"  - {os.path.join(ADDON_CLIENT_DIR, sub_path)}")
+
     mapping = [
         (path, os.path.join(ADDON_CLIENT_DIR, sub_path))
-        for path, sub_path in find_files_in_subdir(client_code_dir)
+        for path, sub_path in found
     ]
 
     license_path = os.path.join(CURRENT_ROOT, "LICENSE")

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from typing import Any, Optional
 
@@ -7,10 +8,17 @@ from nxtools import logging as log
 
 try:
     from ayon_server.addons import BaseServerAddon
+    from ayon_server.api.dependencies import CurrentUser
     from ayon_server.api.responses import EmptyResponse
+    from ayon_server.exceptions import (
+        BadRequestException,
+        ForbiddenException,
+        NotFoundException,
+    )
     from ayon_server.secrets import Secrets
     from ayon_server.settings import BaseSettingsModel
     from ayon_server.types import Field, OPModel
+    from starlette.responses import Response
     # log.info("AYON server modules imported successfully")
 except Exception as e:
     log.error(f"Failed to import AYON server modules: {e}")
@@ -18,6 +26,7 @@ except Exception as e:
 
 # Add error handling for imports
 try:
+    from . import issue_reports
     from .notion_service import NotionService
     from .settings import DEFAULT_DEBUGLY_SETTINGS, DebuglySettings
 
@@ -60,6 +69,7 @@ class NotionUploadAttachmentRequest(OPModel):
 
 class Debugly(BaseServerAddon):
     settings_model = DebuglySettings
+    frontend_scopes = {"settings": {}}
 
     async def get_default_settings(self):
         # log.info("Debugly server addon get_default_settings called")
@@ -90,10 +100,64 @@ class Debugly(BaseServerAddon):
                 self.notion_finalize_attachments,
                 method="POST",
             )
+            self.add_endpoint("/issues", self.debugly_list_issues, method="GET")
+            self.add_endpoint(
+                "/issues/{zip_basename}/attachment/{attachment_name}",
+                self.debugly_issue_attachment,
+                method="GET",
+            )
             # log.info("Debugly server addon initialized successfully")
         except Exception as e:
             log.error(f"Failed to initialize Debugly server addon: {e}")
             raise
+
+    async def debugly_list_issues(self, user: CurrentUser) -> list[dict[str, Any]]:
+        if not user.is_manager:
+            raise ForbiddenException("Only managers can view Debugly issue reports")
+        settings: BaseSettingsModel = await self.get_studio_settings()
+        root, err = issue_reports.resolve_reports_dir(settings)
+        if err or not root:
+            if err:
+                log.warning(f"debugly_list_issues: {err}")
+            return []
+        return await asyncio.to_thread(issue_reports.list_issues, root)
+
+    async def debugly_issue_attachment(
+        self,
+        user: CurrentUser,
+        zip_basename: str,
+        attachment_name: str,
+    ) -> Response:
+        if not user.is_manager:
+            raise ForbiddenException("Only managers can download Debugly issue attachments")
+        settings: BaseSettingsModel = await self.get_studio_settings()
+        root, err = issue_reports.resolve_reports_dir(settings)
+        if err or not root:
+            raise BadRequestException(
+                "Shared folder is disabled or not configured for this server OS"
+            )
+        zip_path = issue_reports.zip_path_under_root(root, zip_basename)
+        if zip_path is None:
+            raise NotFoundException("Issue archive not found")
+
+        def _read() -> tuple[bytes, str, str]:
+            found = issue_reports.read_zip_member(zip_path, attachment_name)
+            if not found:
+                raise FileNotFoundError()
+            body, ctype = found
+            return body, ctype, attachment_name
+
+        try:
+            body, ctype, fname = await asyncio.to_thread(_read)
+        except FileNotFoundError:
+            raise NotFoundException("Attachment not found in archive")
+        return Response(
+            content=body,
+            media_type=ctype,
+            headers={
+                "Content-Disposition": f'attachment; filename="{fname}"',
+            },
+        )
 
     async def test_endpoint(self):
         """Simple test endpoint to verify the addon is working"""

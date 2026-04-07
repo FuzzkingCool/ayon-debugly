@@ -1,0 +1,82 @@
+:root {
+  --md-sys-color-surface-container-lowest: #181C20;
+  --md-sys-color-surface-container: #282C34;
+  --md-sys-color-primary: #E0E0E0;
+  --md-sys-color-on-primary: #1E1E1E;
+  --md-sys-color-on-surface: #E0E0E0;
+  --md-sys-color-outline: #666666;
+  --border-radius-m: 4px;
+  --border-radius-l: 8px;
+  --padding-s: 4px;
+  --padding-m: 8px;
+  --padding-l: 16px;
+}
+
+body {
+  font-family: 'Segoe UI', 'Roboto', 'Arial', sans-serif;
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+  min-height: 100vh;
+  margin: 0;
+  padding: var(--padding-l);
+}
+
+h1 {
+  color: var(--md-sys-color-primary);
+}
+
+.card {
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--border-radius-m);
+  background: var(--md-sys-color-surface-container);
+  margin: var(--padding-m);
+  padding: var(--padding-l);
+  color: var(--md-sys-color-on-surface);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.card.selected {
+  background: #3D3D3D;
+}
+
+.issue-details {
+  background: #23272F;
+  border-radius: var(--border-radius-m);
+  padding: var(--padding-l);
+  margin-top: var(--padding-l);
+}
+
+a {
+  color: var(--md-sys-color-primary);
+  text-decoration: underline;
+}
+
+a:hover {
+  color: #CCCCCC;
+}
+
+.debugly-loading {
+  padding: var(--padding-l);
+  color: var(--md-sys-color-on-surface);
+}
+
+.debugly-error {
+  color: #f2b8b5;
+  margin: var(--padding-m) 0;
+}
+
+.debugly-link-btn {
+  background: transparent;
+  border: none;
+  color: var(--md-sys-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  margin-right: 8px;
+  padding: 0;
+}
+
+.debugly-link-btn:hover {
+  color: #cccccc;
+}
