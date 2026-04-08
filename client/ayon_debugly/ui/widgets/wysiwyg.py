@@ -7,6 +7,25 @@ from qtpy import QtGui, QtWidgets, QtCore
 from ayon_debugly.lib import ADDON_ROOT
 from ayon_debugly.logger import log
 
+# Hover help for the issue description editor and its toolbar.
+WYSIWYG_UI_TOOLTIPS = {
+    "widget": (
+        "Main issue description. Replace the template with your details; "
+        "formatting is preserved when the report is submitted."
+    ),
+    "bold": "Bold: select text and click, or turn bold on for text you type next.",
+    "italic": "Italic: select text and click, or turn italics on for new typing.",
+    "underline": "Underline the selected text or toggle underline for new typing.",
+    "strikethrough": "Strike through selected text (for corrections or removed ideas).",
+    "h1": "Apply top-level heading style to the current line or selection.",
+    "h2": "Apply second-level heading (subsections under H1).",
+    "h3": "Apply third-level heading (smaller subsections).",
+    "bullet": "Start or continue a bullet list at the cursor.",
+    "numbered": "Start or continue a numbered list at the cursor.",
+    "link": "Turn the selected text into a hyperlink (you will be asked for the URL).",
+}
+
+
 class LinkableTextEdit(QtWidgets.QTextEdit):
     """Custom QTextEdit that handles link clicks"""
     
@@ -98,6 +117,8 @@ class WysiwygWidget(QtWidgets.QWidget):
         self._setup_font()
         self._setup_ui()
         self._connect_signals()
+        self.setToolTip(WYSIWYG_UI_TOOLTIPS["widget"])
+        self.editor.setToolTip(WYSIWYG_UI_TOOLTIPS["widget"])
 
     def _setup_font(self):
         # Load FontAwesome 7 Free Solid font
@@ -133,109 +154,110 @@ class WysiwygWidget(QtWidgets.QWidget):
 
     def _setup_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setSpacing(8)
-        
+        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+
         # Toolbar with all markdown features
         toolbar = self._create_toolbar()
         layout.addWidget(toolbar)
-        
+
         # Single rich text editor (WYSIWYG)
         self.editor = LinkableTextEdit()
-        self.editor.setMinimumHeight(200)
+        self.editor.setObjectName("IssueDescriptionEditor")
+        self.editor.setMinimumHeight(140)
         self.editor.setStyleSheet("""
-            QTextEdit {
-                background-color: #2D2D2D;
-                border: 1px solid #666666;
+            QTextEdit#IssueDescriptionEditor {
+                background-color: #151515;
+                border: 1px solid #4A4A4A;
                 border-radius: 4px;
-                padding: 8px;
+                padding: 6px;
                 color: #E0E0E0;
                 font-family: "Segoe UI", Arial, sans-serif;
                 font-size: 12px;
                 line-height: 1.4;
             }
-            QTextEdit:focus {
-                border-color: #888888;
-                background-color: #3D3D3D;
+            QTextEdit#IssueDescriptionEditor:focus {
+                border-color: #7A7A7A;
+                background-color: #151515;
             }
         """)
-        
-        # Set larger default font
+
         font = self.editor.font()
         font.setPointSize(12)
         self.editor.setFont(font)
-        
-        # Set template text as rendered HTML
+
         template_markdown = self._get_template_from_settings()
         template_html = simple_markdown_to_html(template_markdown)
         log.debug(f"Template HTML: {template_html}")
         self.editor.setHtml(template_html)
-        layout.addWidget(self.editor)
+        layout.addWidget(self.editor, 1)
 
     def _create_toolbar(self):
         toolbar = QtWidgets.QWidget()
         toolbar_layout = QtWidgets.QHBoxLayout(toolbar)
-        toolbar_layout.setSpacing(4)
+        toolbar_layout.setSpacing(2)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # FontAwesome 7 Free Solid unicode codes - corrected
+
+        T = WYSIWYG_UI_TOOLTIPS
         try:
             if self.fontawesome_family:
                 log.debug("Using FontAwesome 7 icons")
-                # FontAwesome 7 unicode characters (corrected codes)
-                self.bold_btn = self._create_text_button("B", "Bold", bold=True)
-                self.italic_btn = self._create_text_button("I", "Italic", italic=True)
-                self.underline_btn = self._create_text_button("U", "Underline", underline=True)
-                self.strikethrough_btn = self._create_text_button("S", "Strikethrough", strikeout=True)
-                
-                # Headings - using different icons for each level
-                self.h1_btn = self._create_text_button("H1", "Heading 1")
-                self.h2_btn = self._create_text_button("H2", "Heading 2")
-                self.h3_btn = self._create_text_button("H3", "Heading 3")
-                
-                # Lists - using FontAwesome icons
-                self.bullet_btn = self._create_icon_button("\uf0ca", "Bullet List")  # fa-list-ul
-                self.number_btn = self._create_icon_button("\uf0cb", "Numbered List")  # fa-list-ol
-                
-                # Link only
-                self.link_btn = self._create_icon_button("\uf0c1", "Link")  # fa-link
+                self.bold_btn = self._create_text_button("B", T["bold"], bold=True)
+                self.italic_btn = self._create_text_button("I", T["italic"], italic=True)
+                self.underline_btn = self._create_text_button("U", T["underline"], underline=True)
+                self.strikethrough_btn = self._create_text_button(
+                    "S", T["strikethrough"], strikeout=True
+                )
+                self.h1_btn = self._create_text_button("H1", T["h1"])
+                self.h2_btn = self._create_text_button("H2", T["h2"])
+                self.h3_btn = self._create_text_button("H3", T["h3"])
+                self.bullet_btn = self._create_icon_button("\uf0ca", T["bullet"])
+                self.number_btn = self._create_icon_button("\uf0cb", T["numbered"])
+                self.link_btn = self._create_icon_button("\uf0c1", T["link"])
             else:
-                raise Exception("FontAwesome family not loaded")
+                raise RuntimeError("FontAwesome family not loaded")
         except Exception as e:
             log.debug(f"FontAwesome not loaded or failed: {e}, using text fallbacks")
-            # Simple text fallbacks
-            self.bold_btn = self._create_text_button("B", "Bold", bold=True)
-            self.italic_btn = self._create_text_button("I", "Italic", italic=True)
-            self.underline_btn = self._create_text_button("U", "Underline", underline=True)
-            self.strikethrough_btn = self._create_text_button("S", "Strikethrough", strikeout=True)
-            self.h1_btn = self._create_text_button("H1", "Heading 1")
-            self.h2_btn = self._create_text_button("H2", "Heading 2")
-            self.h3_btn = self._create_text_button("H3", "Heading 3")
-            self.bullet_btn = self._create_text_button("•", "Bullet List")
-            self.number_btn = self._create_text_button("1.", "Numbered List")
-            self.link_btn = self._create_text_button("🔗", "Link")
-        
-        # Add buttons to layout
+            self.bold_btn = self._create_text_button("B", T["bold"], bold=True)
+            self.italic_btn = self._create_text_button("I", T["italic"], italic=True)
+            self.underline_btn = self._create_text_button("U", T["underline"], underline=True)
+            self.strikethrough_btn = self._create_text_button(
+                "S", T["strikethrough"], strikeout=True
+            )
+            self.h1_btn = self._create_text_button("H1", T["h1"])
+            self.h2_btn = self._create_text_button("H2", T["h2"])
+            self.h3_btn = self._create_text_button("H3", T["h3"])
+            self.bullet_btn = self._create_text_button("•", T["bullet"])
+            self.number_btn = self._create_text_button("1.", T["numbered"])
+            self.link_btn = self._create_text_button("🔗", T["link"])
+
         buttons = [
-            self.bold_btn, self.italic_btn, self.underline_btn, self.strikethrough_btn,
-            None,  # Separator
-            self.h1_btn, self.h2_btn, self.h3_btn,
-            None,  # Separator
-            self.bullet_btn, self.number_btn,
-            None,  # Separator
-            self.link_btn
+            self.bold_btn,
+            self.italic_btn,
+            self.underline_btn,
+            self.strikethrough_btn,
+            None,
+            self.h1_btn,
+            self.h2_btn,
+            self.h3_btn,
+            None,
+            self.bullet_btn,
+            self.number_btn,
+            None,
+            self.link_btn,
         ]
-        
+
         for btn in buttons:
             if btn is None:
                 separator = QtWidgets.QFrame()
                 separator.setFrameShape(QtWidgets.QFrame.VLine)
                 separator.setFrameShadow(QtWidgets.QFrame.Sunken)
-                separator.setMaximumHeight(24)
+                separator.setMaximumHeight(18)
                 separator.setStyleSheet("QFrame { color: #666666; }")
                 toolbar_layout.addWidget(separator)
             else:
                 toolbar_layout.addWidget(btn)
-        
+
         toolbar_layout.addStretch()
         return toolbar
 
@@ -280,23 +302,23 @@ class WysiwygWidget(QtWidgets.QWidget):
         # Create font specifically for FontAwesome 7 Free Solid
         font = QtGui.QFont()
         font.setFamily(self.fontawesome_family)
-        font.setPointSize(10)
+        font.setPointSize(8)
         # FontAwesome 7 Free Solid requires weight 900 (Black)
         font.setWeight(QtGui.QFont.Black)
         font.setStyleStrategy(QtGui.QFont.PreferAntialias)
-        
+
         btn.setFont(font)
         btn.setToolTip(tooltip)
-        btn.setFixedSize(28, 28)
-        
+        btn.setFixedSize(22, 22)
+
         # Apply neutral dark theme styling
         btn.setStyleSheet("""
             QPushButton {
                 background-color: #2D2D2D;
                 border: 1px solid #666666;
-                border-radius: 4px;
+                border-radius: 3px;
                 color: #E0E0E0;
-                padding: 2px;
+                padding: 1px;
                 font-family: inherit;
             }
             QPushButton:hover {
@@ -319,7 +341,7 @@ class WysiwygWidget(QtWidgets.QWidget):
         btn = QtWidgets.QPushButton(text)
         
         # Create styled font for text fallbacks
-        font = QtGui.QFont("Segoe UI", 9)
+        font = QtGui.QFont("Segoe UI", 8)
         if bold:
             font.setBold(True)
         if italic:
@@ -328,19 +350,19 @@ class WysiwygWidget(QtWidgets.QWidget):
             font.setUnderline(True)
         if strikeout:
             font.setStrikeOut(True)
-        
+
         btn.setFont(font)
         btn.setToolTip(tooltip)
-        btn.setFixedSize(32, 28)
-        
+        btn.setFixedSize(26, 21)
+
         # Apply neutral dark theme styling
         btn.setStyleSheet("""
             QPushButton {
                 background-color: #2D2D2D;
                 border: 1px solid #666666;
-                border-radius: 4px;
+                border-radius: 3px;
                 color: #E0E0E0;
-                padding: 2px;
+                padding: 1px;
                 font-weight: 500;
             }
             QPushButton:hover {
@@ -590,6 +612,24 @@ class WysiwygWidget(QtWidgets.QWidget):
         # Convert rich text back to markdown for storage
         return self._html_to_markdown(self.editor.toHtml())
 
+    # Sentinels for underline spans: must survive HTML tag strip; unlikely in user text.
+    _MD_UNDERLINE_START = "\ufdd0"
+    _MD_UNDERLINE_END = "\ufdd1"
+
+    def _html_spans_to_bold_markdown(self, text: str) -> str:
+        """Qt often emits bold as <span style="... font-weight:600/700/bold ..."> not <b>."""
+        patterns = (
+            r'<span[^>]*style="[^"]*font-weight:\s*(600|700|bold)[^"]*"[^>]*>([\s\S]*?)</span>',
+            r"<span[^>]*style='[^']*font-weight:\s*(600|700|bold)[^']*'[^>]*>([\s\S]*?)</span>",
+        )
+        for _ in range(24):
+            prev = text
+            for pat in patterns:
+                text = re.sub(pat, r"**\2**", text, flags=re.IGNORECASE)
+            if text == prev:
+                break
+        return text
+
     def _html_to_markdown(self, html):
         # More complete HTML -> Markdown for our editor output
         text = html
@@ -608,6 +648,9 @@ class WysiwygWidget(QtWidgets.QWidget):
         # Dividers
         text = re.sub(r"<hr[^>]*>", "\n---\n", text, flags=re.IGNORECASE)
 
+        # Qt / WebKit bold as font-weight spans (before <b>/<strong>)
+        text = self._html_spans_to_bold_markdown(text)
+
         # Bold / Italic (wrap each line span so headings aren't merged)
         text = re.sub(r"<(?:b|strong)>([\s\S]*?)</(?:b|strong)>", r"**\1**", text, flags=re.IGNORECASE)
         text = re.sub(r"<(?:i|em)>([\s\S]*?)</(?:i|em)>", r"*\1*", text, flags=re.IGNORECASE)
@@ -615,7 +658,7 @@ class WysiwygWidget(QtWidgets.QWidget):
         # Links
         text = re.sub(r"<a[^>]*href=\"([^\"]+)\"[^>]*>([\s\S]*?)</a>", r"[\2](\1)", text, flags=re.IGNORECASE)
 
-        # Underline/Strikethrough spans -> tokens we will parse later
+        # Underline/Strikethrough spans -> tokens Notion parser understands
         text = re.sub(r"<u>([\s\S]*?)</u>", r"<U>\1</U>", text, flags=re.IGNORECASE)
         text = re.sub(r"<span[^>]*style=\"[^\"]*text-decoration:\s*underline[^\"]*\"[^>]*>([\s\S]*?)</span>", r"<U>\1</U>", text, flags=re.IGNORECASE)
         text = re.sub(r"<span[^>]*text-decoration:\s*line-through[^>]*>([\s\S]*?)</span>", r"~~\1~~", text, flags=re.IGNORECASE)
@@ -641,8 +684,18 @@ class WysiwygWidget(QtWidgets.QWidget):
         text = re.sub(r"</p>", "\n\n", text, flags=re.IGNORECASE)
         text = re.sub(r"<p[^>]*>", "", text, flags=re.IGNORECASE)
 
+        # Protect <U>...</U> from blanket tag strip (strip would remove markers entirely)
+        def _underline_protect(m):
+            return self._MD_UNDERLINE_START + m.group(1) + self._MD_UNDERLINE_END
+
+        text = re.sub(r"<U>([\s\S]*?)</U>", _underline_protect, text, flags=re.IGNORECASE)
+
         # Strip any remaining tags
         text = re.sub(r"<[^>]+>", "", text)
+
+        text = text.replace(self._MD_UNDERLINE_START, "<U>").replace(
+            self._MD_UNDERLINE_END, "</U>"
+        )
 
         # Remove stray CSS selector lines that may remain
         text = re.sub(r"(?m)^\s*[^<{\n]{1,60}\{[^}]*\}\s*$", "", text)

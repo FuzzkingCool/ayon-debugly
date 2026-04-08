@@ -36,6 +36,50 @@ except Exception as e:
     raise
 
 
+# Keep in sync with NotionService and https://developers.notion.com/reference/versioning
+NOTION_API_VERSION = "2026-03-11"
+
+
+def _normalize_notion_uuid(value: str) -> str:
+    """Return dashed lowercase UUID, or '' if not 32 hex (ignores existing dashes)."""
+    s = (value or "").strip()
+    if not s:
+        return ""
+    s = s.split("?", 1)[0].split("&", 1)[0].strip()
+    s = s.replace("-", "").lower()
+    if len(s) != 32 or not all(c in "0123456789abcdef" for c in s):
+        return ""
+    return f"{s[:8]}-{s[8:12]}-{s[12:16]}-{s[16:20]}-{s[20:]}"
+
+
+def _parse_notion_database_and_data_source_hint(
+    raw: str,
+) -> tuple[str, Optional[str]]:
+    """Parse pasted Notion DB URL: ``<db_uuid>?v=<data_source_or_view_uuid>``.
+
+    The ``v=`` segment is treated as a **preferred data_source_id** when it
+    appears in ``GET /v1/databases/{id}`` → ``data_sources`` (common when
+    copying from the browser). If it does not match any source, the first
+    source is still used and a warning is logged.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return "", None
+    base = raw.split("?", 1)[0].split("&", 1)[0]
+    ds_hint: Optional[str] = None
+    if "?" in raw:
+        qs = raw.split("?", 1)[1]
+        for part in qs.split("&"):
+            part = part.strip()
+            if part.lower().startswith("v="):
+                ds_hint = _normalize_notion_uuid(part[2:])
+                if not ds_hint:
+                    ds_hint = None
+                break
+    db_id = _normalize_notion_uuid(base)
+    return db_id, ds_hint
+
+
 class NotionSubmitRequest(OPModel):
     title: str = Field("", title="Title")
     user_message: Optional[str] = Field(None, title="User message")
@@ -47,7 +91,17 @@ class NotionSubmitRequest(OPModel):
         description="Base64-encoded ZIP produced by DebuglyIssue.to_zip()",
     )
     database_id: Optional[str] = Field(None, title="Database ID (optional override)")
-    assignee_id: Optional[str] = Field(None, title="Assignee ID (optional override)")
+    issue_type: Optional[str] = Field(None, title="Issue Type (Notion select name)")
+    project: Optional[str] = Field(
+        None,
+        title="Project(s)",
+        description="Single Notion select option: AYON project name or 'all releases'",
+    )
+    pipeline_release: Optional[str] = Field(
+        None,
+        title="Pipeline release",
+        description="Notion Pipeline release select option name",
+    )
     rich_text: Optional[list[dict[str, Any]]] = Field(
         None, title="Pre-parsed rich_text for Notion body"
     )
@@ -177,18 +231,19 @@ class Debugly(BaseServerAddon):
             if not token:
                 return {"success": False, "error": f"Secret '{secret_name}' not found"}
 
-            # Get database ID
-            database_id = (notion_cfg.database_id or "").strip()
-            if "?" in database_id:
-                database_id = database_id.split("?", 1)[0]
-            if len(database_id) == 32 and "-" not in database_id:
-                database_id = f"{database_id[:8]}-{database_id[8:12]}-{database_id[12:16]}-{database_id[16:20]}-{database_id[20:]}"
-
+            raw_db = (notion_cfg.database_id or "").strip()
+            database_id, ds_hint = _parse_notion_database_and_data_source_hint(
+                raw_db
+            )
             if not database_id:
                 return {"success": False, "error": "No database ID configured"}
 
             # Test connection
-            service = NotionService(token=token, database_id=database_id)
+            service = NotionService(
+                token=token,
+                database_id=database_id,
+                data_source_id_hint=ds_hint,
+            )
             result = service.test_connection()
 
             log.debug(f"Notion test result: {result}")
@@ -232,7 +287,7 @@ class Debugly(BaseServerAddon):
                     "https://api.notion.com/v1/users/me",
                     headers={
                         "Authorization": "Bearer test",
-                        "Notion-Version": "2025-09-03",
+                        "Notion-Version": NOTION_API_VERSION,
                     },
                     timeout=(10, 60),
                 )
@@ -284,6 +339,17 @@ class Debugly(BaseServerAddon):
             )
             log.debug(f"Debugly Notion: Tags: {payload.tags}")
             log.debug(
+                f"Debugly Notion: issue_type={getattr(payload, 'issue_type', None)!r} "
+                f"project={getattr(payload, 'project', None)!r} "
+                f"pipeline_release={getattr(payload, 'pipeline_release', None)!r}"
+            )
+            log.info(
+                "Debugly Notion submit: issue_type=%r project=%r pipeline_release=%r",
+                getattr(payload, "issue_type", None),
+                getattr(payload, "project", None),
+                getattr(payload, "pipeline_release", None),
+            )
+            log.debug(
                 f"Debugly Notion: Has attachments: {bool(payload.attachments_zip_b64)}"
             )
             log.debug(f"Debugly Notion: Has blocks: {bool(payload.blocks)}")
@@ -315,18 +381,17 @@ class Debugly(BaseServerAddon):
                 else ""
             )
             cfg_dbid = (notion_cfg.database_id or "").strip()
-            database_id = req_dbid or cfg_dbid
+            raw_db = (req_dbid or cfg_dbid).strip()
+            database_id, ds_hint = _parse_notion_database_and_data_source_hint(
+                raw_db
+            )
             log.debug(
                 f"Debugly Notion: req_dbid='{req_dbid}', cfg_dbid set={bool(cfg_dbid)}"
             )
-            # Strip Notion view/query params if pasted from URL
-            if database_id and "?" in database_id:
-                database_id = database_id.split("?", 1)[0]
-            log.debug(f"Debugly Notion: normalized database_id='{database_id}'")
-            # Convert compact UUID (32 hex chars) to dashed UUID
-            if database_id and len(database_id) == 32 and "-" not in database_id:
-                database_id = f"{database_id[:8]}-{database_id[8:12]}-{database_id[12:16]}-{database_id[16:20]}-{database_id[20:]}"
-                log.debug(f"Debugly Notion: converted compact UUID to '{database_id}'")
+            log.debug(
+                f"Debugly Notion: normalized database_id='{database_id}' "
+                f"data_source_hint={ds_hint[:8] + '...' if ds_hint else None}"
+            )
             if not database_id:
                 log.error("Debugly Notion: No database ID provided")
                 return {"error": "Notion database ID is required in settings"}
@@ -335,7 +400,11 @@ class Debugly(BaseServerAddon):
                 f"Debugly Notion: Creating NotionService with database_id: {database_id[:8]}..."
             )
             try:
-                service = NotionService(token=token, database_id=database_id)
+                service = NotionService(
+                    token=token,
+                    database_id=database_id,
+                    data_source_id_hint=ds_hint,
+                )
                 log.debug("Debugly Notion: NotionService created successfully")
             except Exception as e:
                 log.error(f"Debugly Notion: Failed to create NotionService: {e}")
@@ -346,19 +415,32 @@ class Debugly(BaseServerAddon):
                 return {"error": f"Failed to create NotionService: {str(e)}"}
 
             # Build a stable idempotency key to prevent duplicate page creation on retries
-            idem_src = f"{payload.title}|{payload.user_message or ''}|{','.join(payload.tags or [])}"
+            idem_src = (
+                f"{payload.title}|{payload.user_message or ''}|"
+                f"{','.join(payload.tags or [])}|{payload.issue_type or ''}|"
+                f"{payload.project or ''}|{payload.pipeline_release or ''}"
+            )
             idempotency_key = hashlib.sha256(idem_src.encode("utf-8")).hexdigest()
             log.debug(
                 f"Debugly Notion: Generated idempotency key: {idempotency_key[:8]}..."
             )
 
-            assignee_id = (
-                payload.assignee_id or getattr(notion_cfg, "assignee_id", "") or ""
+            assignee_id = (getattr(notion_cfg, "assignee_id", None) or "").strip()
+            log.debug(
+                f"Debugly Notion: Assignee from settings only: "
+                f"{'set' if assignee_id else 'empty'}"
             )
-            log.debug(f"Debugly Notion: Using assignee_id: '{assignee_id}'")
 
             # Create page without attachments - client will upload them individually
             log.debug("Debugly Notion: Creating page without attachments...")
+            log.info(
+                "Debugly Notion: calling NotionService.submit_issue "
+                "(server addon must include issue_type/project/pipeline_release wiring; "
+                "issue_type=%r project=%r pipeline_release=%r)",
+                getattr(payload, "issue_type", None),
+                getattr(payload, "project", None),
+                getattr(payload, "pipeline_release", None),
+            )
             try:
                 result = service.submit_issue(
                     title=payload.title,
@@ -373,6 +455,9 @@ class Debugly(BaseServerAddon):
                     blocks=payload.blocks,
                     title_property=payload.title_property,
                     async_attachments=False,  # No attachments to process
+                    issue_type=(payload.issue_type or "").strip() or None,
+                    project=(payload.project or "").strip() or None,
+                    pipeline_release=(payload.pipeline_release or "").strip() or None,
                 )
                 log.debug(f"Debugly Notion: Service call successful, result: {result}")
                 return result
@@ -515,11 +600,15 @@ class Debugly(BaseServerAddon):
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "Notion-Version": "2025-09-03",
+            "Notion-Version": NOTION_API_VERSION,
         }
 
-        # Step 1: Create file upload object
-        create_payload = {"filename": filename, "content_type": content_type}
+        # Step 1: Create file upload object (see uploading-small-files guide)
+        create_payload = {
+            "mode": "single_part",
+            "filename": filename,
+            "content_type": content_type,
+        }
 
         try:
             resp = requests.post(
@@ -528,19 +617,31 @@ class Debugly(BaseServerAddon):
                 json=create_payload,
                 timeout=(30, 600),  # 30s connect, 10min read
             )
+            if resp.status_code >= 400:
+                log.error(
+                    "Debugly Notion: POST /file_uploads failed: status=%s body=%s",
+                    resp.status_code,
+                    resp.text[:2000],
+                )
             resp.raise_for_status()
 
             info = resp.json()
             file_upload_id = info["id"]
-            upload_url = info["upload_url"]
+            upload_url = info.get("upload_url") or (
+                f"https://api.notion.com/v1/file_uploads/{file_upload_id}/send"
+            )
 
-            log.debug(f"Created upload object {file_upload_id[:8]}... for {filename}")
+            log.debug(
+                "Created upload object %s... for %s",
+                file_upload_id[:8],
+                filename,
+            )
 
         except Exception as e:
             log.error(f"Failed to create upload object for {filename}: {e}")
             raise
 
-        # Step 2: Upload file content to the provided URL
+        # Step 2: Upload file content to upload_url (typically .../send)
         try:
             # Use generous timeout for file uploads
             upload_timeout = 600  # 10 minutes for all file uploads
@@ -551,11 +652,18 @@ class Debugly(BaseServerAddon):
                 upload_url,
                 headers={
                     "Authorization": f"Bearer {token}",
-                    "Notion-Version": "2025-09-03",
+                    "Notion-Version": NOTION_API_VERSION,
                 },
                 files=files,
                 timeout=(30, upload_timeout),  # 30s connect, 10min read timeout
             )
+            if resp2.status_code >= 400:
+                log.error(
+                    "Debugly Notion: file send failed: url=%s status=%s body=%s",
+                    upload_url,
+                    resp2.status_code,
+                    resp2.text[:2000],
+                )
             resp2.raise_for_status()
 
             log.debug(f"Successfully uploaded content for {filename}")
@@ -588,16 +696,19 @@ class Debugly(BaseServerAddon):
                 return {"error": "Notion API token not configured"}
             log.debug(f"Debugly Notion: Secret retrieved, token length: {len(token)}")
 
-            # Initialize service
-            database_id = notion_settings.database_id
-            if "?" in database_id:
-                database_id = database_id.split("?")[0]
+            raw_db = (notion_settings.database_id or "").strip()
+            database_id, ds_hint = _parse_notion_database_and_data_source_hint(
+                raw_db
+            )
+            if not database_id:
+                log.error("Debugly Notion: No database ID for attachment upload")
+                return {"error": "Notion database ID is not configured"}
 
-            # Convert to UUID format if needed
-            if len(database_id) == 32 and "-" not in database_id:
-                database_id = f"{database_id[:8]}-{database_id[8:12]}-{database_id[12:16]}-{database_id[16:20]}-{database_id[20:]}"
-
-            service = NotionService(token=token, database_id=database_id)
+            service = NotionService(
+                token=token,
+                database_id=database_id,
+                data_source_id_hint=ds_hint,
+            )
 
             page_id = payload.get("page_id")
             if not page_id:
@@ -737,7 +848,7 @@ class Debugly(BaseServerAddon):
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "Notion-Version": "2025-09-03",
+            "Notion-Version": NOTION_API_VERSION,
         }
 
         try:
@@ -755,16 +866,30 @@ class Debugly(BaseServerAddon):
             )
             all_files = uploaded_files
 
-        # Update the page with all files
-        payload = {"properties": {"Attachments": {"files": all_files}}}
+        # Typed files property (Notion 2026-03-11 upload guide)
+        payload = {
+            "properties": {
+                "Attachments": {"type": "files", "files": all_files},
+            }
+        }
+        log.debug(
+            "Debugly Notion: PATCH page attachments count=%s",
+            len(all_files),
+        )
 
         try:
             resp = requests.patch(
                 f"https://api.notion.com/v1/pages/{page_id}",
                 headers=headers,
                 json=payload,
-                timeout=30,
+                timeout=(30, 600),
             )
+            if resp.status_code >= 400:
+                log.error(
+                    "Debugly Notion: PATCH attachments failed: status=%s body=%s",
+                    resp.status_code,
+                    resp.text[:2000],
+                )
             resp.raise_for_status()
             log.debug(
                 f"Successfully updated page with {len(all_files)} total attachments"
@@ -782,14 +907,14 @@ class Debugly(BaseServerAddon):
 
         headers = {
             "Authorization": f"Bearer {token}",
-            "Notion-Version": "2025-09-03",
+            "Notion-Version": NOTION_API_VERSION,
         }
 
         try:
             response = requests.get(
                 f"https://api.notion.com/v1/pages/{page_id}/properties/Attachments",
                 headers=headers,
-                timeout=30,
+                timeout=(30, 120),
             )
             if response.status_code == 200:
                 data = response.json()
@@ -798,7 +923,9 @@ class Debugly(BaseServerAddon):
                 return files
             else:
                 log.warning(
-                    f"Failed to get existing attachments: {response.status_code}"
+                    "Failed to get existing attachments: status=%s body=%s",
+                    response.status_code,
+                    response.text[:800],
                 )
                 return []
         except Exception as e:

@@ -58,6 +58,10 @@ class DebuglyApp:
         log_files=None,
         collected_data=None,
         progress_callback=None,
+        tags=None,
+        issue_type=None,
+        project=None,
+        pipeline_release=None,
     ):
         log.debug("Submitting report...")
         try:
@@ -74,6 +78,10 @@ class DebuglyApp:
                 log_files,
                 collected_data,
                 progress_callback,
+                tags=tags,
+                issue_type=issue_type,
+                project=project,
+                pipeline_release=pipeline_release,
             )
 
             log.debug(f"Report submitted to {len(results)} endpoint(s)")

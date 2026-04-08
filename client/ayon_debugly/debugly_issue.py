@@ -6,7 +6,20 @@ import json
 from datetime import datetime
 
 class DebuglyIssue:
-    def __init__(self, title, user_message, collected_data, attachments=None, screenshot=None, log_files=None, timestamp=None):
+    def __init__(
+        self,
+        title,
+        user_message,
+        collected_data,
+        attachments=None,
+        screenshot=None,
+        log_files=None,
+        timestamp=None,
+        tags=None,
+        issue_type=None,
+        project=None,
+        pipeline_release=None,
+    ):
         self.title = title
         self.user_message = user_message
         self.collected_data = collected_data  # dict from collectors
@@ -14,7 +27,11 @@ class DebuglyIssue:
         self.screenshot = screenshot  # file path or None
         self.log_files = log_files or []  # list of log file paths
         self.timestamp = timestamp or datetime.utcnow().isoformat()
-        
+        self.tags = tags or []
+        self.issue_type = issue_type
+        self.project = project
+        self.pipeline_release = pipeline_release
+
         # Track temporary files for cleanup
         self._temp_files = []
         
@@ -23,17 +40,18 @@ class DebuglyIssue:
 
     def _create_collected_data_file(self):
         """Create a temporary JSON file containing the collected data"""
-        if not self.collected_data:
+        if self.collected_data is None:
             return None
-        
+
         # Create a temporary file for the collected data (text mode)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json", prefix="debugly_collected_data_", mode='w', encoding='utf-8')
         json.dump(self.collected_data, tmp, indent=2)
         tmp.close()
+        self._temp_files.append(tmp.name)
         return tmp.name
 
     def to_dict(self):
-        return {
+        d = {
             "title": self.title,
             "user_message": self.user_message,
             "collected_data": self.collected_data,
@@ -42,17 +60,34 @@ class DebuglyIssue:
             "log_files": self.log_files,
             "timestamp": self.timestamp,
         }
+        if self.tags:
+            d["tags"] = self.tags
+        if self.issue_type:
+            d["issue_type"] = self.issue_type
+        if self.project:
+            d["project"] = self.project
+        if self.pipeline_release:
+            d["pipeline_release"] = self.pipeline_release
+        return d
 
     @classmethod
-    def from_dict(cls, data):
+    def from_dict(cls, data, attachments=None, screenshot=None):
         return cls(
             title=data.get("title", ""),
             user_message=data.get("user_message"),
             collected_data=data.get("collected_data", {}),
-            attachments=data.get("attachments", []),
-            screenshot=data.get("screenshot"),
+            attachments=(
+                attachments if attachments is not None else data.get("attachments", [])
+            ),
+            screenshot=(
+                screenshot if screenshot is not None else data.get("screenshot")
+            ),
             log_files=data.get("log_files", []),
             timestamp=data.get("timestamp"),
+            tags=data.get("tags"),
+            issue_type=data.get("issue_type"),
+            project=data.get("project"),
+            pipeline_release=data.get("pipeline_release"),
         )
 
     def to_zip(self, dest_path=None):

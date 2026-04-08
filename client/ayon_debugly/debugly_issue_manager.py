@@ -65,7 +65,20 @@ class DebuglyIssueManager:
             data.update(collector.collect())
         return data
 
-    def submit_report(self, title, user_message, attachments=None, screenshot=None, log_files=None, collected_data=None, progress_callback=None):
+    def submit_report(
+        self,
+        title,
+        user_message,
+        attachments=None,
+        screenshot=None,
+        log_files=None,
+        collected_data=None,
+        progress_callback=None,
+        tags=None,
+        issue_type=None,
+        project=None,
+        pipeline_release=None,
+    ):
         # Check if we have any endpoints configured
         if not self.endpoints:
             raise Exception("No endpoints are configured or enabled. Please check your settings.")
@@ -82,7 +95,18 @@ class DebuglyIssueManager:
         except Exception as e:
             log.debug(f"DebuglyIssueManager: Could not log collected data content due to encoding: {e}")
         
-        issue = DebuglyIssue(title, user_message, collected_data, attachments, screenshot, log_files)
+        issue = DebuglyIssue(
+            title,
+            user_message,
+            collected_data,
+            attachments,
+            screenshot,
+            log_files,
+            tags=tags,
+            issue_type=issue_type,
+            project=project,
+            pipeline_release=pipeline_release,
+        )
         
         results = []
         endpoint_results = []  # Track endpoint and result pairs

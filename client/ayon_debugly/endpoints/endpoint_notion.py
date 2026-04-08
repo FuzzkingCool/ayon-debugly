@@ -16,7 +16,7 @@ class EndpointNotion(EndpointBase):
     def __init__(self):
         self.notion_token = None
         self.database_id = None
-        self.notion_version = "2025-09-03"  # Latest version with data source support
+        self.notion_version = "2026-03-11"  # Match server NotionService / Notion docs
         self.base_url = "https://api.notion.com/v1"
         super().__init__()
 
@@ -198,12 +198,11 @@ class EndpointNotion(EndpointBase):
             f"Notion endpoint: Database ID: {self.database_id[:8] if self.database_id else 'None'}..."
         )
         log.debug(f"Notion endpoint: Notion version: {self.notion_version}")
-        log.debug(f"Notion endpoint: Assignee ID: {self.assignee_id}")
 
         # Prepare optional tags
         tags = []
         if hasattr(issue, "tags") and issue.tags:
-            tags = [t for t in issue.tags if t]
+            tags = [str(t).strip() for t in issue.tags if t and str(t).strip()]
         log.debug(f"Notion endpoint: Prepared tags: {tags}")
 
         # Bundle attachments/logs into a ZIP and base64 encode
@@ -230,8 +229,15 @@ class EndpointNotion(EndpointBase):
             "collected_data": issue.collected_data or {},
             "tags": tags or [],
             # NO attachments_zip_b64 - this will be sent separately
-            "title_property": "Title",
+            # Omit title_property: Notion DBs often use "Name" (or UUID keys) for the
+            # title column; server resolves the first title-type property from schema.
         }
+        if getattr(issue, "issue_type", None):
+            payload["issue_type"] = str(issue.issue_type).strip()
+        if getattr(issue, "project", None):
+            payload["project"] = str(issue.project).strip()
+        if getattr(issue, "pipeline_release", None):
+            payload["pipeline_release"] = str(issue.pipeline_release).strip()
 
         log.debug(f"Notion endpoint: Base payload keys: {list(payload.keys())}")
         log.debug(f"Notion endpoint: Payload title: '{payload['title']}'")
@@ -246,7 +252,8 @@ class EndpointNotion(EndpointBase):
             "Notion endpoint: Payload has attachments: False (will be sent separately)"
         )
         log.debug(
-            f"Notion endpoint: Payload title_property: {payload['title_property']}"
+            "Notion endpoint: Payload title_property: %r",
+            payload.get("title_property"),
         )
         # Build Notion blocks on the client for exact WYSIWYG fidelity
         try:
@@ -262,14 +269,19 @@ class EndpointNotion(EndpointBase):
             log.debug(f"Notion endpoint: Sending database_id to server: {self.database_id[:8]}...")
         else:
             log.warning("Notion endpoint: No database_id available to send to server")
-        
-        if getattr(self, "assignee_id", None):
-            payload["assignee_id"] = self.assignee_id
 
         # Call server addon endpoint (prefer versioned, fallback to unversioned on 404)
         endpoint = f"/addons/debugly/{__version__}/notion/submit"
         log.debug(f"Notion endpoint: Calling versioned endpoint: {endpoint}")
         log.debug(f"Notion endpoint: Final payload size: {len(str(payload))} chars")
+        log.debug(
+            "Notion endpoint: Pre-submit metadata issue_type=%r project=%r "
+            "pipeline_release=%r has_blocks=%s",
+            payload.get("issue_type"),
+            payload.get("project"),
+            payload.get("pipeline_release"),
+            bool(payload.get("blocks")),
+        )
 
         try:
             log.debug("Notion endpoint: Making first API call to server...")
@@ -750,6 +762,21 @@ class EndpointNotion(EndpointBase):
         # Use the individual attachment upload endpoint
         endpoint = f"/addons/debugly/{__version__}/notion/upload_attachment"
 
+        def _normalize_upload_result(resp):
+            if resp is None:
+                return None
+            result = getattr(resp, "data", None)
+            if not isinstance(result, dict):
+                json_fn = getattr(resp, "json", None)
+                if callable(json_fn):
+                    try:
+                        result = json_fn()
+                    except Exception:
+                        result = None
+            if not isinstance(result, dict):
+                result = resp if isinstance(resp, dict) else None
+            return result
+
         try:
             log.debug(
                 f"Notion endpoint: Uploading {filename} ({file_size} bytes) to {endpoint}"
@@ -760,10 +787,26 @@ class EndpointNotion(EndpointBase):
             if hasattr(resp, "status_code") and resp.status_code != 200:
                 raise Exception(f"Server returned status {resp.status_code}")
 
-            log.debug(f"Notion endpoint: Successfully uploaded {filename}")
-            
-            # Return the response data
-            result = resp.data if hasattr(resp, 'data') else resp
+            result = _normalize_upload_result(resp)
+            if isinstance(result, dict) and result.get("error"):
+                log.warning(
+                    "Notion endpoint: Server reported upload error for %s: %s",
+                    filename,
+                    result.get("error"),
+                )
+                return result
+            if isinstance(result, dict) and result.get("success"):
+                log.debug(
+                    "Notion endpoint: Successfully uploaded %s file_id=%s...",
+                    filename,
+                    (result.get("file_id") or "")[:8],
+                )
+            else:
+                log.debug(
+                    "Notion endpoint: Upload response for %s: %s",
+                    filename,
+                    result,
+                )
             return result
 
         except Exception as e:
@@ -779,12 +822,20 @@ class EndpointNotion(EndpointBase):
                 if hasattr(resp, "status_code") and resp.status_code != 200:
                     raise Exception(f"Server returned status {resp.status_code}")
 
-                log.debug(
-                    f"Notion endpoint: Successfully uploaded {filename} (unversioned)"
-                )
-                
-                # Return the response data
-                result = resp.data if hasattr(resp, 'data') else resp
+                result = _normalize_upload_result(resp)
+                if isinstance(result, dict) and result.get("error"):
+                    log.warning(
+                        "Notion endpoint: Unversioned upload error for %s: %s",
+                        filename,
+                        result.get("error"),
+                    )
+                    return result
+                if isinstance(result, dict) and result.get("success"):
+                    log.debug(
+                        "Notion endpoint: Successfully uploaded %s (unversioned) file_id=%s...",
+                        filename,
+                        (result.get("file_id") or "")[:8],
+                    )
                 return result
 
             except Exception as e2:
@@ -1335,9 +1386,9 @@ class EndpointNotion(EndpointBase):
                         "object": "block",
                         "type": "heading_3",
                         "heading_3": {
-                            "rich_text": [
-                                {"type": "text", "text": {"content": stripped[4:]}}
-                            ]
+                            "rich_text": self._parse_markdown_to_rich_text(
+                                stripped[4:]
+                            ),
                         },
                     }
                 )
@@ -1349,9 +1400,9 @@ class EndpointNotion(EndpointBase):
                         "object": "block",
                         "type": "heading_2",
                         "heading_2": {
-                            "rich_text": [
-                                {"type": "text", "text": {"content": stripped[3:]}}
-                            ]
+                            "rich_text": self._parse_markdown_to_rich_text(
+                                stripped[3:]
+                            ),
                         },
                     }
                 )
@@ -1363,9 +1414,9 @@ class EndpointNotion(EndpointBase):
                         "object": "block",
                         "type": "heading_1",
                         "heading_1": {
-                            "rich_text": [
-                                {"type": "text", "text": {"content": stripped[2:]}}
-                            ]
+                            "rich_text": self._parse_markdown_to_rich_text(
+                                stripped[2:]
+                            ),
                         },
                     }
                 )

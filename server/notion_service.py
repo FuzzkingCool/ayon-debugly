@@ -3,7 +3,7 @@ import html as _html
 import io
 import threading
 import zipfile
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -17,8 +17,19 @@ except ImportError:
     log = logging.getLogger(__name__)
 
 
+def _notion_ids_equal(a: Optional[str], b: Optional[str]) -> bool:
+    if not a or not b:
+        return False
+    return str(a).replace("-", "").lower() == str(b).replace("-", "").lower()
+
+
 class NotionService:
-    def __init__(self, token: str, database_id: str):
+    def __init__(
+        self,
+        token: str,
+        database_id: str,
+        data_source_id_hint: Optional[str] = None,
+    ):
         if not token:
             raise ValueError("Notion API token is required")
         if not database_id:
@@ -26,13 +37,21 @@ class NotionService:
 
         self.token = token
         self.database_id = database_id
-        self.notion_version = "2025-09-03"  # Latest version with data sources
+        self._data_source_id_hint = (data_source_id_hint or "").strip() or None
+        # Notion file upload + page property examples use 2026-03-11; keep in sync
+        # with https://developers.notion.com/guides/data-apis/uploading-small-files
+        self.notion_version = "2026-03-11"
         self.base_url = "https://api.notion.com/v1"
         self._data_source_id = None
 
         log.debug(
             f"NotionService initialized with database_id: {database_id[:8]}..., version: {self.notion_version}"
         )
+        if self._data_source_id_hint:
+            log.debug(
+                "NotionService data_source_id_hint: %s...",
+                self._data_source_id_hint[:8],
+            )
         log.debug(f"Token length: {len(token) if token else 0}")
         log.debug(f"Base URL: {self.base_url}")
 
@@ -44,7 +63,7 @@ class NotionService:
             log.warning(f"Database ID format may be invalid: {database_id}")
             log.warning("Expected format: 32 hex characters (with or without dashes)")
 
-        log.debug("Using 2025-09-03 API - data source operations")
+        log.debug("Using Notion-Version %s (data sources + typed property payloads)", self.notion_version)
 
     def test_connection(self) -> dict[str, Any]:
         """Test the Notion API connection and database access."""
@@ -119,7 +138,7 @@ class NotionService:
                         "user": user_data.get("name", "Unknown"),
                         "data_source_id": data_source_id[:8] + "...",
                         "database_properties": len(properties),
-                        "api_version": "2025-09-03 (data source)",
+                        "api_version": f"{self.notion_version} (data source)",
                     }
                 else:
                     log.warning("No data source found, testing database fallback...")
@@ -132,7 +151,7 @@ class NotionService:
                         "success": True,
                         "user": user_data.get("name", "Unknown"),
                         "database_properties": len(properties),
-                        "api_version": "2025-09-03 (database fallback)",
+                        "api_version": f"{self.notion_version} (database fallback)",
                     }
             except Exception as e:
                 log.error(f"Database access failed: {e}")
@@ -163,11 +182,70 @@ class NotionService:
         log.debug(f"Generated headers with Notion-Version: {self.notion_version}")
         return headers
 
+    @staticmethod
+    def _headers_for_log(headers: dict[str, str]) -> dict[str, str]:
+        """Safe copy of request headers for logging (never log raw tokens)."""
+        h = dict(headers)
+        if h.get("Authorization"):
+            h["Authorization"] = "Bearer ***REDACTED***"
+        return h
+
+    def _log_page_properties_snapshot(self, page_id: str, phase: str = "") -> None:
+        """GET /pages/{id} and log property types + short values (debug verification)."""
+        if not page_id:
+            return
+        url = f"{self.base_url}/pages/{page_id}"
+        try:
+            r = requests.get(url, headers=self._headers(), timeout=(30, 120))
+            if r.status_code != 200:
+                log.warning(
+                    "Notion GET /pages snapshot (%s): status=%s body=%s",
+                    phase,
+                    r.status_code,
+                    r.text[:800],
+                )
+                return
+            body = r.json()
+            props = body.get("properties") or {}
+            parts: list[str] = []
+            for key, val in props.items():
+                if not isinstance(val, dict):
+                    parts.append(f"{key!r}:?")
+                    continue
+                ptype = val.get("type", "?")
+                extra = ""
+                if ptype == "title":
+                    ta = val.get("title") or []
+                    if ta and isinstance(ta[0], dict):
+                        tx = (ta[0].get("plain_text") or "")[:80]
+                        extra = f" text={tx!r}"
+                elif ptype in ("select", "status"):
+                    sub = val.get(ptype) or {}
+                    extra = f" name={sub.get('name')!r}"
+                elif ptype == "multi_select":
+                    ms = val.get("multi_select") or []
+                    extra = f" n={len(ms)}"
+                elif ptype == "people":
+                    pe = val.get("people") or []
+                    extra = f" n={len(pe)}"
+                elif ptype == "files":
+                    fi = val.get("files") or []
+                    extra = f" n={len(fi)}"
+                parts.append(f"{key!r}:{ptype}{extra}")
+            log.info(
+                "Notion page property snapshot (%s): %d props — %s",
+                phase,
+                len(props),
+                " | ".join(parts[:25]) + (" ..." if len(parts) > 25 else ""),
+            )
+        except Exception as e:
+            log.warning("Notion page snapshot (%s) failed: %s", phase, e)
+
     def _get_data_source_id(self) -> Optional[str]:
         """
         Get the data source ID for the database.
-        This is required for the 2025-09-03 API version.
-        Follows the official upgrade guide: https://developers.notion.com/docs/upgrade-guide-2025-09-03
+        Required for multi-source databases (Notion API 2025-09-03+).
+        See: https://developers.notion.com/docs/upgrade-guide-2025-09-03
         """
         if self._data_source_id is not None:
             log.debug(f"Using cached data_source_id: {self._data_source_id[:8]}...")
@@ -209,8 +287,29 @@ class NotionService:
                     log.debug(f"Database response: {data}")
                     return None
 
-                # Use the first data source (canonical approach per upgrade guide)
-                selected_source = data_sources[0]
+                selected_source = None
+                hint = self._data_source_id_hint
+                if hint:
+                    for ds in data_sources:
+                        ds_id = ds.get("id")
+                        if ds_id and _notion_ids_equal(ds_id, hint):
+                            selected_source = ds
+                            log.info(
+                                "Notion: using data_source from URL ?v= hint "
+                                "(name=%r id=%s...)",
+                                ds.get("name", ""),
+                                str(ds_id).replace("-", "")[:8],
+                            )
+                            break
+                    if selected_source is None:
+                        log.warning(
+                            "Notion: data_source_id_hint %s... not in this database's "
+                            "data_sources (%d listed); falling back to first source",
+                            hint.replace("-", "")[:8],
+                            len(data_sources),
+                        )
+                if selected_source is None:
+                    selected_source = data_sources[0]
                 self._data_source_id = selected_source["id"]
                 source_name = selected_source.get("name", "Unknown")
 
@@ -234,36 +333,66 @@ class NotionService:
 
     def _get_database_properties(self) -> dict[str, Any]:
         """
-        Get database properties using the appropriate endpoint for 2025-09-03 API.
+        Load property schema for ``POST /v1/pages`` ``properties``.
+
+        Notion API ``2025-09-03``: multi-source databases require
+        ``parent.type = data_source_id`` on create; schema must come from the
+        **same** ``GET /v1/data_sources/{data_source_id}`` as that parent.
+        See: https://developers.notion.com/docs/upgrade-guide-2025-09-03
+
+        If the database has no ``data_sources``, fall back to
+        ``GET /v1/databases/{database_id}`` (legacy single-table).
         """
         log.debug(f"Fetching database properties for: {self.database_id[:8]}...")
 
         try:
-            # 2025-09-03 API: Try data source endpoint first
             data_source_id = self._get_data_source_id()
             if data_source_id:
-                url = f"{self.base_url}/data_sources/{data_source_id}"
+                ds_url = f"{self.base_url}/data_sources/{data_source_id}"
                 log.debug(
                     f"Getting properties from data source: {data_source_id[:8]}..."
                 )
-                resp = requests.get(url, headers=self._headers(), timeout=(30, 600))
-                resp.raise_for_status()
-                data = resp.json()
-                properties = data.get("properties", {})
-                log.debug(f"Got {len(properties)} properties from data source")
-                return properties
-            else:
-                # Fallback to database endpoint
-                url = f"{self.base_url}/databases/{self.database_id}"
-                log.debug(
-                    f"Getting properties from database: {self.database_id[:8]}..."
+                ds_resp = requests.get(
+                    ds_url, headers=self._headers(), timeout=(30, 600)
                 )
-                resp = requests.get(url, headers=self._headers(), timeout=(30, 600))
-                resp.raise_for_status()
-                data = resp.json()
-                properties = data.get("properties", {})
-                log.debug(f"Got {len(properties)} properties from database")
-                return properties
+                ds_resp.raise_for_status()
+                ds_data = ds_resp.json()
+                ds_properties = ds_data.get("properties") or {}
+                log.debug(f"Got {len(ds_properties)} properties from data source")
+                if not ds_properties:
+                    raise Exception(
+                        "Notion data source returned no properties (empty schema). "
+                        "Check integration capabilities and that the database is "
+                        "accessible with Notion-Version 2025-09-03."
+                    )
+                log.info(
+                    "Notion schema: loaded %d properties from GET /data_sources/{id} "
+                    "(matches data_source_id page parent; id=%s...)",
+                    len(ds_properties),
+                    str(data_source_id).replace("-", "")[:8],
+                )
+                return ds_properties
+
+            url = f"{self.base_url}/databases/{self.database_id}"
+            log.debug(
+                f"Getting properties from database endpoint: {self.database_id[:8]}..."
+            )
+            resp = requests.get(url, headers=self._headers(), timeout=(30, 600))
+            resp.raise_for_status()
+            data = resp.json()
+            properties = data.get("properties") or {}
+            log.info(
+                "Notion schema: loaded %d properties from GET /databases/{id} "
+                "(no data source or empty data-source schema)",
+                len(properties),
+            )
+            log.debug(f"Got {len(properties)} properties from database")
+            if not properties:
+                raise Exception(
+                    "Could not load Notion property schema: empty from database "
+                    "and data source"
+                )
+            return properties
         except Exception as e:
             log.error(f"Failed to get properties: {e}")
             raise Exception(f"Could not access database properties: {e}")
@@ -282,6 +411,9 @@ class NotionService:
         heading: str = "",
         blocks: Optional[list[dict[str, Any]]] = None,
         title_property: Optional[str] = None,
+        issue_type: Optional[str] = None,
+        project: Optional[str] = None,
+        pipeline_release: Optional[str] = None,
     ) -> dict[str, str]:
         log.debug(f"Starting submit_issue with title: '{title[:50]}...'")
         log.debug(f"User message length: {len(user_message) if user_message else 0}")
@@ -289,16 +421,31 @@ class NotionService:
             f"Collected data keys: {list(collected_data.keys()) if collected_data else []}"
         )
         log.debug(f"Tags: {tags}")
-        log.debug(f"Assignee ID: {assignee_id}")
+        log.debug(f"Assignee ID (settings): {'set' if (assignee_id or '').strip() else 'empty'}")
+        log.debug(f"Issue type: {issue_type}, project: {project}, pipeline: {pipeline_release}")
         log.debug(f"Has attachments: {bool(attachments_zip_b64)}")
         log.debug(f"Has blocks: {bool(blocks)}")
         log.debug(f"Title property: {title_property}")
 
         log.debug("Building page properties...")
         properties = self._build_properties(
-            title, tags, collected_data, assignee_id, title_property
+            title,
+            user_message,
+            tags,
+            collected_data,
+            assignee_id,
+            title_property,
+            issue_type=issue_type,
+            project=project,
+            pipeline_release=pipeline_release,
         )
-        log.debug(f"Built properties: {list(properties.keys())}")
+        self._log_built_properties_summary(properties)
+        self._log_built_property_values_info(properties)
+        log.info(
+            "Notion pages.create: built %d properties; if Issue Type/Project/Pipeline "
+            "are missing here, the server addon build is outdated or inputs were empty.",
+            len(properties),
+        )
 
         # Prefer prebuilt blocks from client
         if blocks and isinstance(blocks, list) and len(blocks) > 0:
@@ -311,42 +458,51 @@ class NotionService:
             )
             log.debug(f"Built {len(children)} children blocks")
 
-        # 2025-09-03 API: Try data_source_id first, fallback to database_id
-        # Note: children are added separately after page creation
+        # 2025-09-03: create page with data_source_id parent when the DB exposes
+        # data_sources (required for multi-source DBs). Schema was loaded from the
+        # same source in _get_database_properties. Fallback: database_id.
         data_source_id = self._get_data_source_id()
-
         if data_source_id:
-            # Use data_source_id (2025-09-03 API approach)
-            payload = {
-                "parent": {"type": "data_source_id", "data_source_id": data_source_id},
-                "properties": properties,
-                "icon": {"type": "emoji", "emoji": "❓"},
+            parent = {
+                "type": "data_source_id",
+                "data_source_id": data_source_id,
             }
+            log.info(
+                "Notion POST /pages: parent type=data_source_id id=%s... "
+                "(required for API 2025-09-03 multi-source databases)",
+                str(data_source_id).replace("-", "")[:8],
+            )
             log.debug(
                 f"Using data_source_id for page creation: {data_source_id[:8]}..."
             )
         else:
-            # Fallback to database_id (still supported in 2025-09-03)
-            payload = {
-                "parent": {"type": "database_id", "database_id": self.database_id},
-                "properties": properties,
-                "icon": {"type": "emoji", "emoji": "❓"},
+            parent = {
+                "type": "database_id",
+                "database_id": self.database_id,
             }
+            log.info(
+                "Notion POST /pages: parent type=database_id id=%s... "
+                "(no data_sources on database response)",
+                str(self.database_id).replace("-", "")[:8],
+            )
             log.debug(f"Using database_id for page creation: {self.database_id[:8]}...")
-        log.debug(f"Page creation payload: {payload}")
-        log.debug(f"Page creation payload parent: {payload['parent']}")
-        log.debug(f"Page creation payload properties: {payload['properties']}")
-        log.debug(f"Page creation payload icon: {payload['icon']}")
-
-        log.debug(f"Page creation payload parent: {payload['parent']}")
+        payload = {
+            "parent": parent,
+            "properties": properties,
+            "icon": {"type": "emoji", "emoji": "❓"},
+        }
         log.debug(
-            f"Page creation payload properties count: {len(payload['properties'])}"
+            "Notion POST /pages: parent=%s built_keys=%s props_count=%s icon=%s",
+            self._summarize_parent(payload["parent"]),
+            list(payload["properties"].keys()),
+            len(payload["properties"]),
+            payload.get("icon"),
         )
         log.debug(f"Children will be added after page creation: {len(children)} blocks")
 
         # Debug the exact request being made
         log.debug(f"Making Notion API request to: {self.base_url}/pages")
-        log.debug(f"Request headers: {self._headers()}")
+        log.debug("Request headers: %s", self._headers_for_log(self._headers()))
         log.debug(f"Request payload type: {type(payload)}")
         log.debug(f"Request payload size: {len(str(payload))} characters")
 
@@ -358,7 +514,7 @@ class NotionService:
         # 2025-09-03 API: Use standard pages endpoint with database_id parent
         url = f"{self.base_url}/pages"
         log.debug(f"Making POST request to pages endpoint: {url}")
-        log.debug(f"Request headers: {headers}")
+        log.debug("Request headers: %s", self._headers_for_log(headers))
         log.debug(f"Request payload size: {len(str(payload))} characters")
 
         # More tolerant timeouts and a single retry on transient network errors
@@ -379,7 +535,7 @@ class NotionService:
                     log.error(f"Page creation failed with status {resp.status_code}")
                     log.error(f"Response text: {resp.text}")
                     log.error(f"Request URL: {url}")
-                    log.error(f"Request headers: {headers}")
+                    log.error("Request headers: %s", self._headers_for_log(headers))
                     log.error(f"Request payload: {payload}")
 
                     # Try to parse error response for more details
@@ -458,6 +614,7 @@ class NotionService:
         url = data.get("url", "")
         log.debug(f"Successfully created page with ID: {page_id[:8]}...")
         log.debug(f"Page URL: {url}")
+        self._log_page_properties_snapshot(page_id, phase="after_create")
 
         # Add children blocks after page creation
         if children and len(children) > 0:
@@ -468,9 +625,6 @@ class NotionService:
             except Exception as e:
                 log.warning(f"Failed to add children blocks: {e}")
                 # Don't fail the whole submission for this
-
-        # Handle "Add Name to Vote" field after page creation
-        self._update_vote_field(page_id, collected_data)
 
         # Always upload attachments separately after page creation to avoid timeouts
         if attachments_zip_b64 and page_id:
@@ -516,24 +670,364 @@ class NotionService:
             log.error(f"Failed to add children blocks: {e}")
             raise
 
+    def _notion_property_key(
+        self, db_props: dict[str, Any], *candidates: str
+    ) -> Optional[str]:
+        """Resolve Notion schema map key for a property.
+
+        ``GET /v1/databases/{id}`` and ``GET /v1/data_sources/{id}`` return
+        ``properties`` as a map; keys are often display names but may be property
+        IDs. Each value includes ``name`` and ``type``. Match candidates against
+        map keys first, then against each spec's ``name``.
+        """
+        for name in candidates:
+            if name and name in db_props:
+                return name
+        cand_norm = [str(c).strip() for c in candidates if c and str(c).strip()]
+        if not cand_norm:
+            return None
+        for map_key, spec in db_props.items():
+            if not isinstance(spec, dict):
+                continue
+            prop_name = str(spec.get("name") or "").strip()
+            if not prop_name:
+                continue
+            if prop_name in cand_norm:
+                return str(map_key)
+        return None
+
+    @staticmethod
+    def _log_database_properties_sample(
+        db_props: dict[str, Any], limit: int = 15
+    ) -> None:
+        """DEBUG: map_key vs spec name/id/type to diagnose UUID-keyed schemas."""
+        items = list(db_props.items())
+        for map_key, spec in items[:limit]:
+            if not isinstance(spec, dict):
+                log.debug(
+                    "Notion schema sample: map_key=%r spec_non_dict=%s",
+                    map_key,
+                    type(spec).__name__,
+                )
+                continue
+            log.debug(
+                "Notion schema sample: map_key=%r name=%r id=%r type=%r",
+                map_key,
+                spec.get("name"),
+                spec.get("id"),
+                spec.get("type"),
+            )
+        if len(items) > limit:
+            log.debug(
+                "Notion schema sample: ... %d more properties omitted",
+                len(items) - limit,
+            )
+
+    @staticmethod
+    def _log_built_properties_summary(properties: dict[str, Any]) -> None:
+        """DEBUG: keys and value shape only (no full text / PII)."""
+        keys = list(properties.keys())
+        log.debug("Notion built property keys: %s", keys)
+        parts: list[str] = []
+        for k, v in properties.items():
+            if isinstance(v, dict) and v:
+                part_keys = [x for x in v.keys() if x != "type"]
+                parts.append(f"{k!r}:[{','.join(part_keys)}]")
+            else:
+                parts.append(f"{k!r}:[?]")
+        log.debug("Notion built property shapes: %s", " | ".join(parts))
+
+    @staticmethod
+    def _log_built_property_values_info(properties: dict[str, Any]) -> None:
+        """INFO: human-readable summary of option values sent on pages.create (no PII)."""
+        parts: list[str] = []
+        for k, v in properties.items():
+            if not isinstance(v, dict):
+                continue
+            t = v.get("type")
+            if t == "title":
+                parts.append(f"{k}:title")
+            elif t == "status":
+                nm = (v.get("status") or {}).get("name")
+                parts.append(f"{k}:status={nm!r}")
+            elif t == "select":
+                nm = (v.get("select") or {}).get("name")
+                parts.append(f"{k}:select={nm!r}")
+            elif t == "multi_select":
+                names = [(x or {}).get("name") for x in (v.get("multi_select") or [])]
+                parts.append(f"{k}:multi_select={names!r}")
+            elif t == "people":
+                parts.append(f"{k}:people n={len(v.get('people') or [])}")
+            else:
+                parts.append(f"{k}:{t}")
+        log.info(
+            "Notion pages.create payload summary (%d props): %s",
+            len(properties),
+            " | ".join(parts) if parts else "(empty)",
+        )
+
+    @staticmethod
+    def _summarize_parent(parent: dict[str, Any]) -> str:
+        ptype = parent.get("type", "?")
+        if ptype == "data_source_id":
+            rid = parent.get("data_source_id") or ""
+            s = str(rid).replace("-", "")
+            tail = f"{s[:8]}..." if s else "?"
+            return f"type=data_source_id id={tail}"
+        if ptype == "database_id":
+            rid = parent.get("database_id") or ""
+            s = str(rid).replace("-", "")
+            tail = f"{s[:8]}..." if s else "?"
+            return f"type=database_id id={tail}"
+        if ptype == "page_id":
+            rid = parent.get("page_id") or ""
+            s = str(rid).replace("-", "")
+            tail = f"{s[:8]}..." if s else "?"
+            return f"type=page_id id={tail}"
+        return str(parent)
+
+    @staticmethod
+    def _select_or_status_option_names(prop: dict[str, Any]) -> list[str]:
+        """Option display names for Notion `select`, `multi_select`, or `status` schema."""
+        ptype = prop.get("type")
+        if ptype == "select":
+            opts = prop.get("select", {}).get("options", [])
+            return [o.get("name") for o in opts if o.get("name")]
+        if ptype == "multi_select":
+            opts = prop.get("multi_select", {}).get("options", [])
+            return [o.get("name") for o in opts if o.get("name")]
+        if ptype == "status":
+            opts = prop.get("status", {}).get("options", [])
+            return [o.get("name") for o in opts if o.get("name")]
+        return []
+
+    @staticmethod
+    def _resolve_select_option_name(
+        allowed: list[str],
+        requested: str,
+        field_label: str,
+    ) -> Optional[str]:
+        """Map client/payload string to a Notion option name (exact, then case-insensitive)."""
+        if not requested:
+            return None
+        req = requested.strip()
+        if not req:
+            return None
+        if not allowed:
+            log.warning(
+                "Notion %s: no options in schema; cannot set %r",
+                field_label,
+                requested,
+            )
+            return None
+        if req in allowed:
+            return req
+        req_lower = req.lower()
+        for n in allowed:
+            if n.lower() == req_lower:
+                return n
+        preview = allowed[:20]
+        more = len(allowed) - len(preview)
+        suffix = f" ... (+{more} more)" if more > 0 else ""
+        log.warning(
+            "Notion %s: no option matching %r; allowed (sample): %s%s",
+            field_label,
+            requested,
+            preview,
+            suffix,
+        )
+        return None
+
+    def _set_select_by_name(
+        self,
+        properties: dict[str, Any],
+        db_props: dict[str, Any],
+        prop_key: str,
+        option_name: Optional[str],
+        *,
+        field_label: Optional[str] = None,
+    ) -> None:
+        if not option_name or not prop_key or prop_key not in db_props:
+            return
+        prop = db_props[prop_key]
+        ptype = prop.get("type")
+        name = option_name.strip()
+        if not name:
+            return
+        label = field_label or prop_key
+        if ptype not in ("select", "multi_select", "status"):
+            log.warning(
+                "Notion %s: property type is %r (not select/multi_select/status); skipping",
+                label,
+                ptype,
+            )
+            return
+        allowed = self._select_or_status_option_names(prop)
+        # Data source schema often omits option names; without a fallback we set nothing.
+        if not allowed:
+            log.info(
+                "Notion %s: schema has no option list for type=%r; sending %r as-is",
+                label,
+                ptype,
+                name,
+            )
+            resolved = name
+        else:
+            resolved = self._resolve_select_option_name(allowed, name, label)
+            if not resolved:
+                return
+        # 2026-03-11 docs: include explicit "type" on property update objects
+        if ptype == "select":
+            properties[prop_key] = {
+                "type": "select",
+                "select": {"name": resolved},
+            }
+        elif ptype == "multi_select":
+            properties[prop_key] = {
+                "type": "multi_select",
+                "multi_select": [{"name": resolved}],
+            }
+        elif ptype == "status":
+            properties[prop_key] = {
+                "type": "status",
+                "status": {"name": resolved},
+            }
+
+    @staticmethod
+    def _option_name_case_insensitive(names: list[str], target: str) -> Optional[str]:
+        """Return the schema’s canonical option string if any name matches target (case-insensitive)."""
+        if not names or not target:
+            return None
+        tl = target.strip().lower()
+        if not tl:
+            return None
+        for n in names:
+            if n and str(n).strip().lower() == tl:
+                return str(n)
+        return None
+
+    def _default_status_name(self, db_props: dict[str, Any]) -> Optional[str]:
+        key = self._notion_property_key(db_props, "Status")
+        if not key:
+            return None
+        prop = db_props[key]
+        ptype = prop.get("type")
+        if ptype not in ("select", "status"):
+            return None
+        names = self._select_or_status_option_names(prop)
+        if not names:
+            # Schema may omit options; _set_select_by_name will pass the string through.
+            return "Ready To Start"
+        for preferred in ("Ready To Start", "Backlog"):
+            hit = self._option_name_case_insensitive(names, preferred)
+            if hit:
+                return hit
+        return names[0]
+
+    def _default_priority_name(self, db_props: dict[str, Any]) -> Optional[str]:
+        key = self._notion_property_key(db_props, "Priority")
+        if not key:
+            return None
+        prop = db_props[key]
+        ptype = prop.get("type")
+        if ptype not in ("select", "status"):
+            return None
+        names = self._select_or_status_option_names(prop)
+        if not names:
+            # Schema may omit options; _set_select_by_name will pass the string through.
+            return "P3"
+        for n in names:
+            if n.upper() == "P3":
+                return n
+        return names[0]
+
+    def _log_notion_schema_resolution(self, db_props: dict[str, Any]) -> None:
+        """Log schema keys and how logical fields map to Notion property keys/types."""
+        keys = sorted(db_props.keys())
+        log.info(
+            "Notion database schema: %d properties with keys: %s",
+            len(keys),
+            keys,
+        )
+        title_k = next(
+            (k for k, v in db_props.items() if v.get("type") == "title"),
+            None,
+        )
+        rows: list[tuple[str, Optional[str]]] = [
+            ("title(first)", title_k),
+            ("Status", self._notion_property_key(db_props, "Status")),
+            ("Priority", self._notion_property_key(db_props, "Priority")),
+            (
+                "Issue Type",
+                self._notion_property_key(
+                    db_props,
+                    "Issue Type",
+                    "Issue Type (AI)",
+                    "Issue Type AI",
+                ),
+            ),
+            (
+                "Project",
+                self._notion_property_key(
+                    db_props, "Project", "Project(s)", "Projects"
+                ),
+            ),
+            (
+                "Pipeline Release",
+                self._notion_property_key(
+                    db_props, "Pipeline Release", "Pipeline release"
+                ),
+            ),
+            (
+                "Submitted By",
+                self._notion_property_key(
+                    db_props, "Submitted By", "Submitted by"
+                ),
+            ),
+        ]
+        parts: list[str] = []
+        for label, k in rows:
+            if k:
+                parts.append(f"{label}->{k!r}({db_props[k].get('type')})")
+            else:
+                parts.append(f"{label}->MISSING")
+        parts.append("Brief (AI)->skipped(not submitted by Debugly)")
+        parts.append("Tags (AI)->skipped(not submitted by Debugly)")
+        parts.append("Assign->skipped(not set by Debugly)")
+        log.info("Notion field resolution: %s", " | ".join(parts))
+
     def _build_properties(
         self,
         title: str,
-        tags: list[str],
+        user_message: str,
+        _tags: list[str],
         collected_data: dict[str, Any],
         assignee_id: str,
         title_property_override: Optional[str] = None,
+        issue_type: Optional[str] = None,
+        project: Optional[str] = None,
+        pipeline_release: Optional[str] = None,
     ) -> dict[str, Any]:
         properties: dict[str, Any] = {}
+        _ = assignee_id  # Notion "Assign" not set; keep arg for submit_issue API
         # Always fetch schema to validate title property key
         db_props = self._get_database_properties()
+        self._log_database_properties_sample(db_props)
+        self._log_notion_schema_resolution(db_props)
 
         # Title
         # Decide title property: prefer override if it exists and is a title; else find first 'title' type; else fallback "Title"
         title_key = None
-        if title_property_override and title_property_override in db_props:
-            if db_props[title_property_override].get("type") == "title":
-                title_key = title_property_override
+        if title_property_override:
+            resolved_title = self._notion_property_key(
+                db_props,
+                title_property_override,
+                # Common synonyms when settings say "Title" but Notion column is "Name"
+                "Name",
+                "Issue title",
+            )
+            if resolved_title and db_props.get(resolved_title, {}).get("type") == "title":
+                title_key = resolved_title
         if not title_key:
             title_key = next(
                 (k for k, v in db_props.items() if v.get("type") == "title"), None
@@ -541,151 +1035,203 @@ class NotionService:
         if not title_key:
             title_key = "Title"
         properties[title_key] = {
+            "type": "title",
             "title": [
                 {
                     "type": "text",
                     "text": {"content": title[:2000]},
                 }
-            ]
+            ],
         }
 
-        # Tags
-        if "Tags" in db_props and tags:
-            properties["Tags"] = {"multi_select": [{"name": t} for t in tags if t]}
+        # Status (select) — Ready To Start, else Backlog, else first option
+        sk = self._notion_property_key(db_props, "Status")
+        if sk:
+            default_s = self._default_status_name(db_props)
+            if default_s:
+                self._set_select_by_name(
+                    properties, db_props, sk, default_s, field_label="Status"
+                )
 
-        # Submitted By - set to current user from collected data
-        if "Submitted By" in db_props:
-            user_id = self._get_current_user_id(collected_data)
-            if user_id:
-                properties["Submitted By"] = {"people": [{"id": user_id}]}
+        # Priority (select or status) — default P3 when present in schema
+        pk = self._notion_property_key(db_props, "Priority")
+        if pk:
+            default_p = self._default_priority_name(db_props)
+            if default_p:
+                self._set_select_by_name(
+                    properties, db_props, pk, default_p, field_label="Priority"
+                )
 
-        # Add Name to Vote - will be handled after page creation
-        # (We can't get existing values before the page exists)
+        # Issue Type — primary Notion column "Issue Type"; legacy AI-named columns last.
+        itk = self._notion_property_key(
+            db_props,
+            "Issue Type",
+            "Issue Type (AI)",
+            "Issue Type AI",
+        )
+        if itk and issue_type:
+            self._set_select_by_name(
+                properties, db_props, itk, issue_type, field_label="Issue Type"
+            )
+
+        # Project — renamed column "Project"; legacy "Project(s)" / "Projects"
+        prk = self._notion_property_key(
+            db_props, "Project", "Project(s)", "Projects"
+        )
+        proj_val = (project or "").strip()
+        if proj_val.lower() == "all releases":
+            proj_val = "Studio"
+        if prk and proj_val:
+            self._set_select_by_name(
+                properties, db_props, prk, proj_val, field_label="Project"
+            )
+
+        # Pipeline Release — select, multi_select, or status
+        plk = self._notion_property_key(
+            db_props, "Pipeline Release", "Pipeline release"
+        )
+        if plk and pipeline_release:
+            self._set_select_by_name(
+                properties,
+                db_props,
+                plk,
+                pipeline_release,
+                field_label="Pipeline Release",
+            )
+
+        # Brief (AI) / Tags (AI) — not written by Debugly (Notion owns those columns).
+
+        # Submitted By — people
+        sb_key = self._notion_property_key(
+            db_props, "Submitted By", "Submitted by"
+        )
+        if sb_key:
+            sprop = db_props.get(sb_key, {})
+            if sprop.get("type") == "people":
+                user_id = self._get_current_user_id(collected_data)
+                if user_id:
+                    properties[sb_key] = {
+                        "type": "people",
+                        "people": [{"id": user_id}],
+                    }
+
+        log.info(
+            "Notion submit: resolved schema map keys — title=%r status=%r priority=%r "
+            "issue_type=%r project=%r pipeline=%r submitted_by=%r (assign skipped)",
+            title_key,
+            self._notion_property_key(db_props, "Status"),
+            self._notion_property_key(db_props, "Priority"),
+            self._notion_property_key(
+                db_props,
+                "Issue Type",
+                "Issue Type (AI)",
+                "Issue Type AI",
+            ),
+            self._notion_property_key(
+                db_props, "Project", "Project(s)", "Projects"
+            ),
+            self._notion_property_key(
+                db_props, "Pipeline Release", "Pipeline release"
+            ),
+            self._notion_property_key(db_props, "Submitted By", "Submitted by"),
+        )
 
         return properties
 
-    def _get_current_user_id(self, collected_data: dict[str, Any]) -> Optional[str]:
-        """Get current user ID by finding the real user by email from AYON data."""
-        try:
-            # Extract user email from AYON collected data
-            user_email = None
-            if collected_data and "User" in collected_data:
-                user_data = collected_data["User"]
-                if isinstance(user_data, dict) and "user" in user_data:
-                    user_data = user_data["user"]
-                user_email = user_data.get("ayon_email")
+    @staticmethod
+    def _collected_user_dict(
+        collected_data: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve the user info dict from collector payload (key user or User).
 
-            if not user_email:
-                log.warning(
-                    "No user email found in collected data - cannot find real user"
-                )
+        CollectorUser returns a dict with key 'user' merged into collected_data,
+        so the blob is typically at collected_data['user'] and already contains
+        ayon_email. Do not treat the inner info['user'] OS login string as a
+        nested user dict.
+        """
+        if not collected_data:
+            return None
+        blob = collected_data.get("User")
+        if blob is None:
+            blob = collected_data.get("user")
+        if not isinstance(blob, dict):
+            return None
+        if blob.get("ayon_email") is not None or blob.get("ayon_username") is not None:
+            return blob
+        inner = blob.get("user")
+        if isinstance(inner, dict) and (
+            inner.get("ayon_email") is not None
+            or inner.get("ayon_username") is not None
+        ):
+            return inner
+        return blob
+
+    @staticmethod
+    def _ayon_email_usable(email: Optional[str]) -> bool:
+        if email is None:
+            return False
+        s = str(email).strip()
+        if not s:
+            return False
+        return s.lower() != "unknown"
+
+    def _get_current_user_id(self, collected_data: dict[str, Any]) -> Optional[str]:
+        """Resolve Notion person id from AYON user email in collected data."""
+        try:
+            user_blob = self._collected_user_dict(collected_data)
+            user_email = (
+                (user_blob or {}).get("ayon_email") if user_blob else None
+            )
+            if not self._ayon_email_usable(user_email):
+                if not user_blob:
+                    log.warning(
+                        "No user blob in collected data — cannot resolve Submitted By"
+                    )
+                else:
+                    log.warning(
+                        "No usable ayon_email in collected data — cannot resolve "
+                        "Submitted By"
+                    )
                 return None
 
-            log.debug(f"Looking for Notion user with email: {user_email}")
-
-            # List all users in the workspace to find the real user by email
             headers = self._headers()
             response = requests.get(
                 f"{self.base_url}/users", headers=headers, timeout=600
             )
 
-            if response.status_code == 200:
-                users_data = response.json()
-                users = users_data.get("results", [])
+            if response.status_code != 200:
+                log.warning(
+                    "Failed to list users from Notion API: %s",
+                    response.status_code,
+                )
+                return None
 
-                log.debug(f"Found {len(users)} users in Notion workspace")
+            users_data = response.json()
+            users = users_data.get("results", [])
+            log.debug("Found %s users in Notion workspace", len(users))
 
-                # Find user by email
-                for user in users:
-                    user_id = user.get("id")
-                    user_name = user.get("name", "Unknown")
-                    user_type = user.get("type", "unknown")
-
-                    # Check person email
-                    if user_type == "person":
-                        person_data = user.get("person", {})
-                        person_email = person_data.get("email", "")
-
-                        if person_email.lower() == user_email.lower():
-                            log.info(
-                                f"Found matching user: {user_name} (ID: {user_id[:8]}..., email: {person_email})"
-                            )
-                            return user_id
-
-                    log.debug(
-                        f"User: {user_name} (ID: {user_id[:8]}..., type: {user_type}, email: {person_email if user_type == 'person' else 'N/A'})"
+            log.debug("Looking for Notion user with email: %s", user_email)
+            for user in users:
+                if user.get("type") != "person":
+                    continue
+                user_id = user.get("id")
+                user_name = user.get("name", "Unknown")
+                person_data = user.get("person", {})
+                person_email = person_data.get("email", "")
+                if person_email.lower() == str(user_email).lower():
+                    log.info(
+                        "Found matching user: %s (ID: %s..., email: %s)",
+                        user_name,
+                        user_id[:8] if user_id else "",
+                        person_email,
                     )
+                    return user_id
 
-                log.warning(f"No Notion user found with email: {user_email}")
-                return None
-            else:
-                log.warning(
-                    f"Failed to list users from Notion API: {response.status_code}"
-                )
-                return None
-        except Exception as e:
-            log.warning(f"Failed to get current user ID from Notion API: {e}")
+            log.warning("No Notion user found with email: %s", user_email)
             return None
-
-    def _get_existing_multi_select_values(
-        self, page_id: str, property_name: str
-    ) -> list[str]:
-        """Get existing values from a multi-select property."""
-        try:
-            headers = self._headers()
-            response = requests.get(
-                f"{self.base_url}/pages/{page_id}/properties/{property_name}",
-                headers=headers,
-                timeout=600,  # 10 minutes
-            )
-            if response.status_code == 200:
-                data = response.json()
-                return [item.get("id") for item in data.get("multi_select", [])]
-            return []
         except Exception as e:
-            log.warning(f"Failed to get existing values for {property_name}: {e}")
-            return []
-
-    def _update_vote_field(self, page_id: str, collected_data: dict[str, Any]):
-        """Update the 'Add Name to Vote' field after page creation."""
-        try:
-            # Check if the field exists in the database
-            db_props = self._get_database_properties()
-            if "Add Name to Vote" not in db_props:
-                log.debug("No 'Add Name to Vote' field found in database")
-                return
-
-            user_id = self._get_current_user_id(collected_data)
-            if not user_id:
-                log.warning("Could not determine current user for vote field")
-                return
-
-            log.debug(f"Adding user {user_id[:8]}... to vote field")
-
-            # For a new page, just add the current user (no existing values to preserve)
-            payload = {
-                "properties": {"Add Name to Vote": {"multi_select": [{"id": user_id}]}}
-            }
-
-            headers = self._headers()
-            response = requests.patch(
-                f"{self.base_url}/pages/{page_id}",
-                headers=headers,
-                json=payload,
-                timeout=(30, 600),  # 30s connect, 10min read
-            )
-
-            if response.status_code == 200:
-                log.debug(
-                    f"Successfully updated 'Add Name to Vote' field for page {page_id[:8]}..."
-                )
-            else:
-                log.warning(
-                    f"Failed to update 'Add Name to Vote' field: {response.status_code} - {response.text}"
-                )
-
-        except Exception as e:
-            log.warning(f"Failed to update vote field: {e}")
+            log.warning("Failed to get current user ID from Notion API: %s", e)
+            return None
 
     def _build_children(
         self,
@@ -1000,6 +1546,8 @@ class NotionService:
                         zi.filename.startswith("attachments/")
                         or zi.filename.startswith("screenshot/")
                         or zi.filename.startswith("logs/")
+                        or zi.filename == "collected_data.json"
+                        or zi.filename == "issue.json"
                     )
                 ]
 
@@ -1102,8 +1650,12 @@ class NotionService:
         file_size = len(file_bytes)
         log.debug(f"Starting upload for {file_name} ({file_size} bytes)")
 
-        # Step 1: Create file upload object
-        create_payload = {"filename": file_name, "content_type": content_type}
+        # Step 1: Create file upload object (mode required for predictable behavior)
+        create_payload = {
+            "mode": "single_part",
+            "filename": file_name,
+            "content_type": content_type,
+        }
 
         try:
             resp = requests.post(
@@ -1112,19 +1664,32 @@ class NotionService:
                 json=create_payload,
                 timeout=(30, 600),  # 30s connect, 10min read
             )
+            if resp.status_code >= 400:
+                log.error(
+                    "Notion POST /file_uploads failed: status=%s body=%s",
+                    resp.status_code,
+                    resp.text[:2000],
+                )
             resp.raise_for_status()
 
             info = resp.json()
             file_upload_id = info["id"]
-            upload_url = info["upload_url"]
+            upload_url = info.get("upload_url") or (
+                f"{self.base_url}/file_uploads/{file_upload_id}/send"
+            )
 
-            log.debug(f"Created upload object {file_upload_id[:8]}... for {file_name}")
+            log.debug(
+                "Created upload object %s... for %s upload_url_host=%s",
+                file_upload_id[:8],
+                file_name,
+                upload_url.split("/")[2] if upload_url and "/" in upload_url else "?",
+            )
 
         except Exception as e:
             log.error(f"Failed to create upload object for {file_name}: {e}")
             raise
 
-        # Step 2: Upload file content to the provided URL
+        # Step 2: Upload file content to upload_url (typically .../file_uploads/{id}/send)
         try:
             # Use very generous timeout for file uploads (10 minutes)
             upload_timeout = 600  # 10 minutes for all file uploads
@@ -1140,7 +1705,23 @@ class NotionService:
                 files=files,
                 timeout=(30, upload_timeout),  # 30s connect, 10min read timeout
             )
+            if resp2.status_code >= 400:
+                log.error(
+                    "Notion file send failed: url=%s status=%s body=%s",
+                    upload_url,
+                    resp2.status_code,
+                    resp2.text[:2000],
+                )
             resp2.raise_for_status()
+            sent = resp2.json() if resp2.content else {}
+            st = sent.get("status")
+            if st and st != "uploaded":
+                log.warning(
+                    "Notion file upload status not 'uploaded' for %s: %r full=%s",
+                    file_name,
+                    st,
+                    {k: sent.get(k) for k in ("id", "status", "filename") if k in sent},
+                )
 
             log.debug(f"Successfully uploaded content for {file_name}")
             return file_upload_id
@@ -1208,16 +1789,31 @@ class NotionService:
             )
             all_files = uploaded_files
 
-        # Update the page with all files
-        payload = {"properties": {"Attachments": {"files": all_files}}}
+        # Update the page with all files (typed payload per Notion 2026-03-11 guide)
+        payload = {
+            "properties": {
+                "Attachments": {"type": "files", "files": all_files},
+            }
+        }
+        log.debug(
+            "Notion PATCH /pages attachments: count=%s sample_keys=%s",
+            len(all_files),
+            list(all_files[0].keys()) if all_files else [],
+        )
 
         try:
             resp = requests.patch(
                 f"{self.base_url}/pages/{page_id}",
                 headers=self._headers(),
                 json=payload,
-                timeout=30,
+                timeout=(30, 600),
             )
+            if resp.status_code >= 400:
+                log.error(
+                    "Notion PATCH attachments failed: status=%s body=%s",
+                    resp.status_code,
+                    resp.text[:2000],
+                )
             resp.raise_for_status()
             log.debug(
                 f"Successfully updated page with {len(all_files)} total attachments"
@@ -1234,7 +1830,7 @@ class NotionService:
             response = requests.get(
                 f"{self.base_url}/pages/{page_id}/properties/Attachments",
                 headers=headers,
-                timeout=30,
+                timeout=(30, 120),
             )
             if response.status_code == 200:
                 data = response.json()

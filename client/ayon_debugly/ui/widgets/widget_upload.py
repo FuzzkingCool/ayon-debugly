@@ -2,6 +2,10 @@
 
 from qtpy import QtCore, QtWidgets
 
+UPLOAD_WIDGET_TOOLTIP = (
+    "Drag files from Explorer/Finder and drop them here, or use Browse Files below. "
+    "Attachments are included when you submit the report."
+)
 
 
 class UploadWidget(QtWidgets.QFrame):
@@ -11,17 +15,18 @@ class UploadWidget(QtWidgets.QFrame):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setFrameStyle(QtWidgets.QFrame.StyledPanel | QtWidgets.QFrame.Raised)
-        self.setMinimumHeight(120)  # Minimum height, can grow naturally
+        self.setMinimumHeight(100)
+        self.setToolTip(UPLOAD_WIDGET_TOOLTIP)
         self.setStyleSheet("""
             QFrame {
-                border: 2px dashed #666666;
+                border: 2px dashed #555555;
                 border-radius: 6px;
-                background: #2D2D2D;
+                background: #151515;
                 padding: 12px;
             }
             QFrame:hover {
-                border-color: #888888;
-                background: #3D3D3D;
+                border-color: #777777;
+                background: #1C1C1C;
             }
             QLabel {
                 color: #E0E0E0;
@@ -34,6 +39,7 @@ class UploadWidget(QtWidgets.QFrame):
         # Simple single label approach
         self.label = QtWidgets.QLabel("📁 Drag and drop files here to attach", self)
         self.label.setAlignment(QtCore.Qt.AlignCenter)
+        self.label.setToolTip(UPLOAD_WIDGET_TOOLTIP)
         
         # Simple layout
         layout = QtWidgets.QVBoxLayout(self)

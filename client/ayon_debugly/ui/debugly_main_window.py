@@ -8,14 +8,25 @@ from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtGui import QFont
 
 from ayon_debugly.collectors import get_collector_pairs
-from ayon_debugly.collectors.collector_logs import CollectorLogs
 from ayon_debugly.debugly_app import DebuglyApp
 from ayon_debugly.logger import log
+from ayon_debugly.notion_issue_fields import (
+    ISSUE_TYPE_OPTIONS,
+    PIPELINE_RELEASE_OPTIONS,
+    PROJECT_SELECT_STUDIO,
+    default_pipeline_release_label,
+    load_accessible_project_names,
+)
 from ayon_debugly.models.issue_form_model import IssueFormModel
 from ayon_debugly.ui.widgets.attachment_list import AttachmentListWidget
 from ayon_debugly.ui.widgets.widget_upload import UploadWidget
 from ayon_debugly.ui.widgets.wysiwyg import WysiwygWidget
 from ayon_debugly.ui.dialogs import show_success_dialog
+
+# Default report window size and initial left/right pane ratio (~58% / 42%).
+DEFAULT_REPORT_WIDTH = 1812
+DEFAULT_REPORT_HEIGHT = 1090
+SPLITTER_LEFT_RATIO = 0.58
 
 MATERIAL_COLORS = {
     "primary": "#E0E0E0",
@@ -27,6 +38,96 @@ MATERIAL_COLORS = {
     "border_radius_m": "4px",
     "padding_m": "6px",
     "padding_l": "8px",
+}
+
+# Denser input surfaces (line edits, combos) and dropdown popup
+FORM_FIELD_BG = "#151515"
+FORM_FIELD_BG_FOCUS = "#1E1E1E"
+FORM_FIELD_BORDER = "#4A4A4A"
+FORM_FIELD_BORDER_FOCUS = "#7A7A7A"
+COMBO_POPUP_BG = "#121212"
+COMBO_POPUP_BORDER = "#888888"
+COMBO_POPUP_SELECTION = "#2A3A4A"
+
+# Centralized hover help for the report form (left pane, status, accordions).
+UI_TOOLTIPS = {
+    "title": (
+        "Short summary of the problem or request. "
+        "This becomes the issue title in Notion and in any exported report."
+    ),
+    "issue_type": (
+        "Pick the category that best matches your issue so it can be routed "
+        "and triaged correctly."
+    ),
+    "project": (
+        "Choose the AYON project this relates to, or Studio if it is "
+        "not tied to a single project."
+    ),
+    "pipeline_release": (
+        "Pipeline track: production, studio, or all releases. "
+        "Helps reproduce environment-specific problems."
+    ),
+    "submit_wait": (
+        "Wait until system information collection finishes (status shows Ready), "
+        "then click to send the report."
+    ),
+    "submit_ready": (
+        "Send this issue with the description, attachments, and collected "
+        "system information to the configured endpoints."
+    ),
+    "status": (
+        "Shows whether collectors have finished (Ready), are still running, "
+        "or if submission is in progress."
+    ),
+    "progress": (
+        "Progress while collectors run or while the report is being submitted."
+    ),
+    "accordion_screenshots": (
+        "Capture screenshots of your screen or a region and attach them to "
+        "this report. Open this section to use the capture buttons and preview."
+    ),
+    "accordion_attachments": (
+        "Add files by drag-and-drop, or browse. These are bundled with your "
+        "issue when you submit."
+    ),
+    "accordion_collected": (
+        "Read-only snapshot of system and environment data gathered for this "
+        "report. Expand sections to review what will be sent."
+    ),
+    "accordion_logs": (
+        "Log files that are automatically included with the report. "
+        "The list is informational; selection cannot be changed."
+    ),
+    "screenshot_full": (
+        "Hide this window and capture the entire primary screen as a PNG, "
+        "then attach it to the report."
+    ),
+    "screenshot_area": (
+        "Minimize this window and draw a rectangle to capture only that region; "
+        "the image is attached automatically."
+    ),
+    "browse_files": (
+        "Open a file dialog to attach one or more files to this report."
+    ),
+    "attached_files_label": (
+        "Files and screenshots that will be submitted with this issue. "
+        "Remove items from the list if you do not want them included."
+    ),
+    "collected_scroll": (
+        "Scroll to read each collected metadata section. "
+        "This data is sent with your submission."
+    ),
+    "logs_list": (
+        "Paths of log files included automatically. Hover an item for details."
+    ),
+    "section_header": (
+        "Click to expand or collapse this collected data section. "
+        "Content is read-only."
+    ),
+    "issue_description": (
+        "Describe the problem, expected behavior, and steps to reproduce. "
+        "Use the toolbar for headings and lists; this text is sent as the issue body."
+    ),
 }
 
 
@@ -63,7 +164,18 @@ class SubmissionWorker(QtCore.QObject):
     error = QtCore.Signal(str)  # error_message
     progress = QtCore.Signal(str, int, int)  # message, current, total
     
-    def __init__(self, app, title, message_markdown, attachments, collected_metadata, log_files=None):
+    def __init__(
+        self,
+        app,
+        title,
+        message_markdown,
+        attachments,
+        collected_metadata,
+        log_files=None,
+        issue_type=None,
+        project=None,
+        pipeline_release=None,
+    ):
         super().__init__()
         self.app = app
         self.title = title
@@ -71,6 +183,9 @@ class SubmissionWorker(QtCore.QObject):
         self.attachments = attachments
         self.collected_metadata = collected_metadata
         self.log_files = log_files or []
+        self.issue_type = issue_type
+        self.project = project
+        self.pipeline_release = pipeline_release
     
     def run(self):
         """Submit the report in the background thread"""
@@ -88,7 +203,11 @@ class SubmissionWorker(QtCore.QObject):
                 None,  # screenshot parameter
                 self.log_files,  # log_files parameter
                 self.collected_metadata,  # collected_data parameter
-                progress_callback=self.progress.emit  # Pass progress callback
+                progress_callback=self.progress.emit,  # Pass progress callback
+                tags=[],
+                issue_type=self.issue_type,
+                project=self.project,
+                pipeline_release=self.pipeline_release,
             )
             
             log.debug(f"Report submitted successfully to {len(results)} endpoint(s)")
@@ -105,12 +224,17 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         super().__init__(parent)
         self._setup_fontawesome()
         self.setWindowTitle("Debugly - Report an Issue")
-        # Email-like window dimensions
-        self.setMinimumWidth(1200)
+        self._min_report_width = 1180
+        self.setMinimumWidth(self._min_report_width)
         self.setMinimumHeight(600)
-        self.resize(1400, 700)  # Default size for email-like experience
+        ag = QtWidgets.QApplication.primaryScreen().availableGeometry()
+        w = min(DEFAULT_REPORT_WIDTH, max(self._min_report_width, ag.width() - 40))
+        h = min(DEFAULT_REPORT_HEIGHT, max(600, ag.height() - 40))
+        self.resize(w, h)
+        self._pending_splitter_layout = True
         self.attachment_widget = AttachmentListWidget(self)
         self.setup_ui()
+        self.attachment_widget.setToolTip(UI_TOOLTIPS["attached_files_label"])
         self.form_model = IssueFormModel()
         self.app = DebuglyApp()
         self.collected_metadata = {}
@@ -147,16 +271,29 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.collector_threads = []
         self.submission_worker = None
         self.submission_thread = None
-        
+        self._collectors_ready = False
+
         # Setup collectors in background after UI is shown
         QtCore.QTimer.singleShot(100, self._setup_collectors_async)
         
         log.debug("DebuglyMainWindow initialized")
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, "_pending_splitter_layout", False) and hasattr(
+            self, "content_splitter"
+        ):
+            sw = self.content_splitter.width()
+            if sw > 0:
+                left = int(round(sw * SPLITTER_LEFT_RATIO))
+                right = max(1, sw - left)
+                self.content_splitter.setSizes([left, right])
+                self._pending_splitter_layout = False
+
     def setup_ui(self):
         main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(10, 10, 10, 10)
 
         # Content area with email-like layout using QSplitter for resizable columns
         self.content_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -164,46 +301,130 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Main editor panel (left)
         editor_widget = QtWidgets.QWidget()
         editor_panel = QtWidgets.QVBoxLayout(editor_widget)
-        editor_panel.setSpacing(8)
-        
+        editor_panel.setSpacing(6)
+        editor_panel.setContentsMargins(0, 0, 14, 0)
+
         # Issue title field
         title_label = QtWidgets.QLabel("Issue Title")
         title_label.setObjectName("BoldSectionLabel")
+        title_label.setToolTip(UI_TOOLTIPS["title"])
         editor_panel.addWidget(title_label)
-        
+
         self.title_edit = QtWidgets.QLineEdit()
         self.title_edit.setPlaceholderText("Enter a brief title for your issue...")
-        self.title_edit.setMinimumHeight(32)
-        self.title_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: #2D2D2D;
-                border: 1px solid #666666;
+        self.title_edit.setMinimumHeight(26)
+        self.title_edit.setToolTip(UI_TOOLTIPS["title"])
+        self.title_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {FORM_FIELD_BG};
+                border: 1px solid {FORM_FIELD_BORDER};
                 border-radius: 4px;
-                padding: 8px 12px;
+                padding: 4px 8px;
                 color: #E0E0E0;
                 font-size: 12px;
-            }
-            QLineEdit:focus {
-                border-color: #888888;
-                background-color: #3D3D3D;
-            }
+            }}
+            QLineEdit:focus {{
+                border-color: {FORM_FIELD_BORDER_FOCUS};
+                background-color: {FORM_FIELD_BG_FOCUS};
+            }}
         """)
         editor_panel.addWidget(self.title_edit)
-        
+
+        meta_style = f"""
+            QComboBox {{
+                background-color: {FORM_FIELD_BG};
+                border: 1px solid {FORM_FIELD_BORDER};
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #E0E0E0;
+                font-size: 12px;
+                min-height: 24px;
+            }}
+            QComboBox:focus {{
+                border-color: {FORM_FIELD_BORDER_FOCUS};
+                background-color: {FORM_FIELD_BG_FOCUS};
+            }}
+            QComboBox::drop-down {{ border: none; width: 22px; }}
+            QComboBox QAbstractItemView {{
+                background-color: {COMBO_POPUP_BG};
+                color: #E0E0E0;
+                border: 1px solid {COMBO_POPUP_BORDER};
+                outline: 1px solid {COMBO_POPUP_BORDER};
+                selection-background-color: {COMBO_POPUP_SELECTION};
+                selection-color: #F0F0F0;
+                padding: 2px;
+            }}
+        """
+
+        meta_grid = QtWidgets.QGridLayout()
+        meta_grid.setHorizontalSpacing(10)
+        meta_grid.setVerticalSpacing(2)
+        meta_grid.setColumnStretch(0, 1)
+        meta_grid.setColumnStretch(1, 1)
+        meta_grid.setColumnStretch(2, 1)
+
+        it_label = QtWidgets.QLabel("Issue Type")
+        it_label.setObjectName("BoldSectionLabel")
+        it_label.setToolTip(UI_TOOLTIPS["issue_type"])
+        pr_label = QtWidgets.QLabel("Project")
+        pr_label.setObjectName("BoldSectionLabel")
+        pr_label.setToolTip(UI_TOOLTIPS["project"])
+        pl_label = QtWidgets.QLabel("Pipeline release")
+        pl_label.setObjectName("BoldSectionLabel")
+        pl_label.setToolTip(UI_TOOLTIPS["pipeline_release"])
+        meta_grid.addWidget(it_label, 0, 0)
+        meta_grid.addWidget(pr_label, 0, 1)
+        meta_grid.addWidget(pl_label, 0, 2)
+
+        self.issue_type_combo = QtWidgets.QComboBox()
+        self.issue_type_combo.setStyleSheet(meta_style)
+        self.issue_type_combo.setToolTip(UI_TOOLTIPS["issue_type"])
+        for opt in ISSUE_TYPE_OPTIONS:
+            self.issue_type_combo.addItem(opt, opt)
+
+        self.project_combo = QtWidgets.QComboBox()
+        self.project_combo.setStyleSheet(meta_style)
+        self.project_combo.setToolTip(UI_TOOLTIPS["project"])
+
+        self.pipeline_combo = QtWidgets.QComboBox()
+        self.pipeline_combo.setStyleSheet(meta_style)
+        self.pipeline_combo.setToolTip(UI_TOOLTIPS["pipeline_release"])
+        for opt in PIPELINE_RELEASE_OPTIONS:
+            self.pipeline_combo.addItem(opt, opt)
+        dpl = default_pipeline_release_label()
+        di = self.pipeline_combo.findData(dpl)
+        if di >= 0:
+            self.pipeline_combo.setCurrentIndex(di)
+
+        meta_grid.addWidget(self.issue_type_combo, 1, 0)
+        meta_grid.addWidget(self.project_combo, 1, 1)
+        meta_grid.addWidget(self.pipeline_combo, 1, 2)
+        editor_panel.addLayout(meta_grid)
+
         # Issue Description label
         editor_label = QtWidgets.QLabel("Issue Description")
         editor_label.setObjectName("BoldSectionLabel")
+        editor_label.setToolTip(UI_TOOLTIPS["issue_description"])
         editor_panel.addWidget(editor_label)
-        
+
         self.wysiwyg = WysiwygWidget(self)
-        self.wysiwyg.setMinimumWidth(500)
-        self.wysiwyg.setMinimumHeight(400)
+        self.wysiwyg.setMinimumWidth(420)
+        self.wysiwyg.setMinimumHeight(220)
         editor_panel.addWidget(self.wysiwyg, 1)
-        
+
+        footer_rule = QtWidgets.QFrame()
+        footer_rule.setFrameShape(QtWidgets.QFrame.HLine)
+        footer_rule.setFrameShadow(QtWidgets.QFrame.Plain)
+        footer_rule.setFixedHeight(1)
+        footer_rule.setStyleSheet("QFrame { background-color: #444444; border: none; }")
+        editor_panel.addWidget(footer_rule)
+
         # Submit button at bottom of editor panel
         self.submitButton = QtWidgets.QPushButton("Submit Report")
-        self.submitButton.setMinimumHeight(32)
-        self.submitButton.setMaximumHeight(32)
+        self.submitButton.setMinimumHeight(30)
+        self.submitButton.setMaximumHeight(30)
+        self.submitButton.setEnabled(False)
+        self.submitButton.setToolTip(UI_TOOLTIPS["submit_wait"])
         editor_panel.addWidget(self.submitButton)
         
         # Right side vertical accordion panel
@@ -213,12 +434,13 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.content_splitter.addWidget(editor_widget)
         self.content_splitter.addWidget(self.accordion_panel)
         
-        # Set initial sizes (editor gets more space, attachments column wider)
-        self.content_splitter.setSizes([600, 600])
+        # Initial splitter sizes; refined on first showEvent to ~58/42 of inner width.
+        self.content_splitter.setSizes([1040, 752])
         
-        # Set minimum sizes
-        self.content_splitter.setMinimumWidth(1200)
+        self.content_splitter.setMinimumWidth(self._min_report_width)
         self.content_splitter.setChildrenCollapsible(False)
+        self.content_splitter.setStretchFactor(0, 1)
+        self.content_splitter.setStretchFactor(1, 1)
         
         # Add the splitter to main layout
         main_layout.addWidget(self.content_splitter, 1)
@@ -230,19 +452,24 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         status_layout.setContentsMargins(8, 4, 8, 4)
         
         self.statusLabel = QtWidgets.QLabel("Initializing...")
+        self.statusLabel.setToolTip(UI_TOOLTIPS["status"])
         status_layout.addWidget(self.statusLabel)
-        
+
         # Add progress bar
         self.progressBar = QtWidgets.QProgressBar()
         self.progressBar.setVisible(False)  # Hidden by default
         self.progressBar.setMinimumWidth(200)
         self.progressBar.setMaximumWidth(300)
+        self.progressBar.setToolTip(UI_TOOLTIPS["progress"])
         status_layout.addWidget(self.progressBar)
         
         main_layout.addWidget(status_container)
 
     def _setup_collectors_async(self):
         """Setup and run all collectors asynchronously to populate UI widgets and metadata"""
+        self._collectors_ready = False
+        self.submitButton.setEnabled(False)
+        self.submitButton.setToolTip(UI_TOOLTIPS["submit_wait"])
         try:
             self.statusLabel.setText("Collecting system information...")
             self.progressBar.setVisible(True)
@@ -262,7 +489,12 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             # Track completed collectors
             self.completed_collectors = 0
             self.collected_metadata = {}
-            
+
+            if total_collectors == 0:
+                log.warning("No collectors registered; enabling submit without async collection")
+                self._on_all_collectors_finished()
+                return
+
             # Start all collectors in background threads
             for collector_name, collector_class in collector_pairs:
                 self._start_collector_thread(collector_name, collector_class)
@@ -274,6 +506,10 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             log.error(traceback.format_exc())
             self.progressBar.setVisible(False)
             self.statusLabel.setText(f"Error collecting data: {e}")
+            self._collectors_ready = True
+            self.submitButton.setEnabled(True)
+            self.submitButton.setToolTip(UI_TOOLTIPS["submit_ready"])
+            self._populate_project_combo()
 
     def _start_collector_thread(self, collector_name, collector_class):
         """Start a single collector in a background thread using canonical Qt threading"""
@@ -344,11 +580,34 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Complete progress bar
         self.progressBar.setVisible(False)
         self.statusLabel.setText("Ready")
-        
+        self._collectors_ready = True
+        self.submitButton.setEnabled(True)
+        self.submitButton.setToolTip(UI_TOOLTIPS["submit_ready"])
+
+        self._populate_project_combo()
+
         # Update the collected info widget
         self._update_collected_info_widget()
         
         log.debug("All collectors completed successfully")
+
+    def _populate_project_combo(self):
+        """Fill Project with AYON user-accessible projects plus Studio (cross-project)."""
+        prev = self.project_combo.currentData()
+        self.project_combo.blockSignals(True)
+        self.project_combo.clear()
+        self.project_combo.addItem("Select project…", None)
+        try:
+            for name in load_accessible_project_names():
+                self.project_combo.addItem(name, name)
+        except Exception as e:
+            log.warning(f"Could not load AYON project list: {e}")
+        self.project_combo.addItem(PROJECT_SELECT_STUDIO, PROJECT_SELECT_STUDIO)
+        self.project_combo.blockSignals(False)
+        if prev:
+            idx = self.project_combo.findData(prev)
+            if idx >= 0:
+                self.project_combo.setCurrentIndex(idx)
 
     def _update_log_list_from_data(self, data):
         """Update log list widget from collected data"""
@@ -385,11 +644,11 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Main container widget
         accordion_widget = QtWidgets.QWidget()
         accordion_layout = QtWidgets.QVBoxLayout(accordion_widget)
-        accordion_layout.setContentsMargins(0, 0, 0, 0)
+        accordion_layout.setContentsMargins(14, 0, 0, 0)
         accordion_layout.setSpacing(4)
         
         # Set minimum width for the accordion panel (resizable)
-        accordion_widget.setMinimumWidth(400)
+        accordion_widget.setMinimumWidth(360)
         
         # Create screenshot tools accordion section
         self.screenshot_accordion = self._create_screenshot_accordion()
@@ -423,12 +682,13 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Accordion header button
         self.screenshot_header = QtWidgets.QPushButton()
         self.screenshot_header.setObjectName("AccordionHeader")
-        self.screenshot_header.setFixedHeight(32)
+        self.screenshot_header.setFixedHeight(28)
         # Font Awesome camera icon (fa-camera)
         self.screenshot_header.setText("📷 Screenshots")
         fa = QFont(self.fontawesome_family, 11)
         fa.setWeight(QtGui.QFont.Black)  # FontAwesome 7 requires Black weight
         self.screenshot_header.setFont(fa)
+        self.screenshot_header.setToolTip(UI_TOOLTIPS["accordion_screenshots"])
         self.screenshot_header.clicked.connect(self._toggle_screenshot_panel)
         
         # Content panel (initially hidden - will be opened by _initialize_accordion)
@@ -437,9 +697,9 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.screenshot_content.setVisible(False)  # Start closed, will be opened by initialization
         self.screenshot_content.setStyleSheet("background-color: #1E1E1E;")  # Match app background
         content_layout = QtWidgets.QVBoxLayout(self.screenshot_content)
-        content_layout.setContentsMargins(12, 8, 12, 12)
-        content_layout.setSpacing(8)
-        
+        content_layout.setContentsMargins(8, 6, 8, 8)
+        content_layout.setSpacing(6)
+
         # Screenshot carousel
         try:
             from ayon_debugly.ui.widgets.screenshot_carousel import ScreenshotCarousel
@@ -452,6 +712,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.screenshot_carousel.setMinimumHeight(120)
             self.screenshot_carousel.setMaximumHeight(120)
             self.screenshot_carousel.setStyleSheet("border: 1px dashed #666666; background: #2D2D2D; color: #E0E0E0;")
+        self.screenshot_carousel.setToolTip(UI_TOOLTIPS["accordion_screenshots"])
         content_layout.addWidget(self.screenshot_carousel)
         
         # Screenshot buttons below preview (smaller with icons)
@@ -462,7 +723,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Full Screen button with icon
         self.screenshotButton = QtWidgets.QPushButton("🖥️ Full Screen")
         self.screenshotButton.setFixedSize(120, 28)  # Increased width to prevent text cutoff
-        self.screenshotButton.setToolTip("Take a screenshot of the entire screen")
+        self.screenshotButton.setToolTip(UI_TOOLTIPS["screenshot_full"])
         self.screenshotButton.setStyleSheet("""
             QPushButton {
                 background-color: #2D2D2D;
@@ -485,7 +746,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Select Area button with icon
         self.captureAreaButton = QtWidgets.QPushButton("✂️ Select Area")
         self.captureAreaButton.setFixedSize(120, 28)  # Increased width to prevent text cutoff
-        self.captureAreaButton.setToolTip("Select a specific area to screenshot")
+        self.captureAreaButton.setToolTip(UI_TOOLTIPS["screenshot_area"])
         self.captureAreaButton.setStyleSheet("""
             QPushButton {
                 background-color: #2D2D2D;
@@ -531,6 +792,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         fa = QFont(self.fontawesome_family, 11)
         fa.setWeight(QtGui.QFont.Black)
         self.attachments_header.setFont(fa)
+        self.attachments_header.setToolTip(UI_TOOLTIPS["accordion_attachments"])
         self.attachments_header.clicked.connect(self._toggle_attachments_panel)
         
         # Create the attachments content widget
@@ -540,7 +802,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.attachments_content.setStyleSheet("background-color: #1E1E1E;")
         
         # Set minimum size for the entire attachments section
-        self.attachments_content.setMinimumHeight(450)  # Minimum height to prevent layout breaking
+        self.attachments_content.setMinimumHeight(320)
         
         content_layout = QtWidgets.QVBoxLayout(self.attachments_content)
         content_layout.setContentsMargins(12, 8, 12, 12)
@@ -549,7 +811,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # 1. Upload widget (drag & drop area)
         self.upload_widget = UploadWidget(self)
         self.upload_widget.filesDropped.connect(self.on_files_dropped)
-        self.upload_widget.setMinimumHeight(120)  # Minimum height, can grow
+        self.upload_widget.setMinimumHeight(100)
         content_layout.addWidget(self.upload_widget)
         
         # 2. Divider line
@@ -572,6 +834,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 background: transparent;
             }
         """)
+        attachments_label.setToolTip(UI_TOOLTIPS["attached_files_label"])
         content_layout.addWidget(attachments_label)
         
         # 4. Attachment list widget
@@ -588,6 +851,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         
         self.attachmentsButton = QtWidgets.QPushButton("Browse Files")
         self.attachmentsButton.setFixedSize(110, 28)
+        self.attachmentsButton.setToolTip(UI_TOOLTIPS["browse_files"])
         self.attachmentsButton.setStyleSheet("""
             QPushButton {
                 background-color: #2D2D2D;
@@ -633,6 +897,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         fa = QFont(self.fontawesome_family, 11)
         fa.setWeight(QtGui.QFont.Black)  # FontAwesome 7 requires Black weight
         self.logs_header.setFont(fa)
+        self.logs_header.setToolTip(UI_TOOLTIPS["accordion_logs"])
         self.logs_header.clicked.connect(self._toggle_logs_panel)
         
         # Content panel (initially hidden)
@@ -654,12 +919,14 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 padding: 4px 0px;
             }
         """)
+        info_label.setToolTip(UI_TOOLTIPS["accordion_logs"])
         content_layout.addWidget(info_label)
-        
+
         # Log list view
         self.logListView = QtWidgets.QListView()
         self.logListView.setMinimumHeight(120)
         self.logListView.setMaximumHeight(200)
+        self.logListView.setToolTip(UI_TOOLTIPS["logs_list"])
         content_layout.addWidget(self.logListView)
         
         # Add widgets to accordion
@@ -685,6 +952,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         fa = QFont(self.fontawesome_family, 11)
         fa.setWeight(QtGui.QFont.Black)  # FontAwesome 7 requires Black weight
         self.collected_info_header.setFont(fa)
+        self.collected_info_header.setToolTip(UI_TOOLTIPS["accordion_collected"])
         self.collected_info_header.clicked.connect(self._toggle_collected_info_panel)
         
         # Content panel (initially hidden)
@@ -703,7 +971,8 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         scroll_area.setMaximumHeight(300)
         scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        
+        scroll_area.setToolTip(UI_TOOLTIPS["collected_scroll"])
+
         # Container widget for the metadata fields
         self.collected_info_container = QtWidgets.QWidget()
         self.collected_info_layout = QtWidgets.QVBoxLayout(self.collected_info_container)
@@ -1070,14 +1339,67 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             )
             log.warning("Submission blocked: missing message and attachments")
             return
-        
+
+        if not getattr(self, "_collectors_ready", False):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Still collecting",
+                "Please wait until system information collection finishes "
+                "(status shows Ready), then try again.",
+            )
+            return
+
+        issue_type = (self.issue_type_combo.currentData() or "").strip()
+        if not issue_type:
+            issue_type = self.issue_type_combo.currentText().strip()
+        if not issue_type:
+            QtWidgets.QMessageBox.warning(
+                self, "Issue Type", "Please select an issue type."
+            )
+            self.issue_type_combo.setFocus()
+            return
+
+        if self.project_combo.currentData() is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Project(s)",
+                "Please select a project (or 'all releases').",
+            )
+            self.project_combo.setFocus()
+            return
+        project = str(self.project_combo.currentData()).strip()
+
+        pipeline_release = self.pipeline_combo.currentData() or self.pipeline_combo.currentText()
+        pipeline_release = str(pipeline_release).strip()
+        if not pipeline_release:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Pipeline release",
+                "Please select a pipeline release.",
+            )
+            self.pipeline_combo.setFocus()
+            return
+
         # Disable submit button to prevent double submission
         self.submitButton.setEnabled(False)
-        
-        # Start submission in background thread
-        self._submit_report_async(title, attachments)
 
-    def _submit_report_async(self, title, attachments):
+        # Start submission in background thread
+        self._submit_report_async(
+            title,
+            attachments,
+            issue_type=issue_type,
+            project=project,
+            pipeline_release=pipeline_release,
+        )
+
+    def _submit_report_async(
+        self,
+        title,
+        attachments,
+        issue_type=None,
+        project=None,
+        pipeline_release=None,
+    ):
         """Submit report in background thread"""
         # Setup progress bar for submission
         self.progressBar.setVisible(True)
@@ -1086,6 +1408,19 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         self.progressBar.setValue(0)
         self.statusLabel.setText("Preparing report...")
         QtWidgets.QApplication.processEvents()
+
+        try:
+            fresh = self.app.issue_manager.collect_data()
+            self.collected_metadata = fresh
+            log_files_meta = fresh.get("log_files") or []
+            if log_files_meta:
+                self._update_log_list_from_data({"log_files": log_files_meta})
+            self._update_collected_info_widget()
+        except Exception as e:
+            log.warning(
+                "Submit-time collect_data failed; using cached metadata: %s", e
+            )
+            log.debug(traceback.format_exc())
         
         # Get log files from the log model
         log_files = []
@@ -1096,9 +1431,24 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                     log_files.append(item.data(QtCore.Qt.UserRole))
         
         # Start submission thread
-        self._start_submission_thread(title, attachments, log_files)
+        self._start_submission_thread(
+            title,
+            attachments,
+            log_files,
+            issue_type=issue_type,
+            project=project,
+            pipeline_release=pipeline_release,
+        )
 
-    def _start_submission_thread(self, title, attachments, log_files):
+    def _start_submission_thread(
+        self,
+        title,
+        attachments,
+        log_files,
+        issue_type=None,
+        project=None,
+        pipeline_release=None,
+    ):
         """Start submission in background thread using canonical Qt threading"""
         # Create worker and thread
         worker = SubmissionWorker(
@@ -1107,7 +1457,10 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             self.form_model.message_markdown,
             attachments,
             self.collected_metadata,
-            log_files
+            log_files,
+            issue_type=issue_type,
+            project=project,
+            pipeline_release=pipeline_release,
         )
         thread = QtCore.QThread()
         
@@ -1162,7 +1515,8 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         """Handle submission error"""
         self.progressBar.setVisible(False)
         self.submitButton.setEnabled(True)  # Re-enable submit button
-        
+        self.submitButton.setToolTip(UI_TOOLTIPS["submit_ready"])
+
         QtWidgets.QMessageBox.critical(self, "Submission Failed", error_message)
         self.statusLabel.setText(f"Error: {error_message}")
         log.error(f"Submission failed: {error_message}")
@@ -1187,10 +1541,10 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             }}
             
             QLabel#BoldSectionLabel {{
-                font-size: 14px;
+                font-size: 12px;
                 font-weight: 700;
                 color: {MATERIAL_COLORS["primary"]};
-                margin-bottom: 4px;
+                margin-bottom: 2px;
             }}
             
             QPushButton#AccordionHeader {{
@@ -1263,6 +1617,21 @@ class DebuglyMainWindow(QtWidgets.QWidget):
                 color: {MATERIAL_COLORS["on_surface"]};
                 font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
                 font-size: 11px;
+            }}
+            QTextEdit#IssueDescriptionEditor,
+            QTextEdit#IssueDescriptionEditor:hover {{
+                background-color: #151515;
+                border: 1px solid #4A4A4A;
+                border-radius: {MATERIAL_COLORS["border_radius_m"]};
+                padding: 6px;
+                selection-background-color: #4D4D4D;
+                color: #E0E0E0;
+                font-family: 'Segoe UI', 'Arial', sans-serif;
+                font-size: 12px;
+            }}
+            QTextEdit#IssueDescriptionEditor:focus {{
+                background-color: #151515;
+                border-color: #7A7A7A;
             }}
             
             QListView {{
@@ -1497,6 +1866,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         # Format section name for display
         display_name = section_name.replace("_", " ").title()
         header_button.setText(f"▼ {display_name}")
+        header_button.setToolTip(UI_TOOLTIPS["section_header"])
         header_button.clicked.connect(lambda: self._toggle_section(header_button, content_widget))
         
         # Content panel (initially visible)

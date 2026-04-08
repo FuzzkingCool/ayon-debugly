@@ -10,7 +10,7 @@ import subprocess
 
 from ayon_debugly.logger import log
 
-STAGING_ARGS = "--use-staging --verbose DEBUG"
+STAGING_ARGS = "--use-staging --debug --verbose DEBUG"
 SHORTCUT_NAME_WIN = "AYON Staging.lnk"
 SHORTCUT_NAME_MAC = "AYON Staging.app"
 
@@ -48,7 +48,7 @@ def _get_macos_app_path():
 
 def create_staging_shortcut_windows(addon_root):
     """Create a Windows .lnk shortcut on the Desktop.
-    Target: AYON_EXECUTABLE with --use-staging --verbose DEBUG.
+    Target: AYON_EXECUTABLE with --use-staging --debug --verbose DEBUG.
     Icon: addon_root/resources/AYON_icon_staging.ico
     """
     exe = _get_ayon_executable()
@@ -81,7 +81,7 @@ $s.TargetPath = $TargetPath
 $s.Arguments = $Arguments
 $s.IconLocation = $IconLocation
 $s.WorkingDirectory = $WorkingDirectory
-$s.Description = 'AYON Launcher (Staging, verbose DEBUG)'
+$s.Description = 'AYON Launcher (Staging, debug, verbose DEBUG)'
 $s.Save()
 """ % (
         _ps_escape(lnk_path),
@@ -142,7 +142,7 @@ def create_staging_shortcut_macos(addon_root):
     launcher_script = os.path.join(macos_dir, "launcher")
     launcher_content = (
         "#!/bin/bash\n"
-        f'open -na "{app_path_env}" --args --use-staging --verbose DEBUG\n'
+        f'open -na "{app_path_env}" --args --use-staging --debug --verbose DEBUG\n'
     )
     with open(launcher_script, "w", newline="\n") as f:
         f.write(launcher_content)

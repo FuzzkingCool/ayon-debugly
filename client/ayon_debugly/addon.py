@@ -175,7 +175,8 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
             warning_dialog.setText("AYON will close and reopen in staging release.")
             warning_dialog.setInformativeText(
                 "Before proceeding, please save your work and close all AYON-integrated applications.\n\n"
-                "The current AYON instance will close and restart with --use-staging."
+                "The current AYON instance will close and restart with staging, "
+                "--debug, and verbose DEBUG logging."
             )
             warning_dialog.setStandardButtons(
                 QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
@@ -186,7 +187,9 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
                 log.debug("User cancelled restart to staging")
                 return
 
-            run_detached_ayon_launcher_process("--use-staging", "--verbose", "DEBUG")
+            run_detached_ayon_launcher_process(
+                "--use-staging", "--debug", "--verbose", "DEBUG"
+            )
             QtWidgets.QApplication.quit()
         except Exception as e:
             log.error("Failed to restart AYON to staging: %s", e)
