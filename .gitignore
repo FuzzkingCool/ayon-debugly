@@ -182,4 +182,9 @@ cython_debug/
 /__pycache__
 poetry.lock
 
-#frontend
+# frontend
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+/frontend/.env.local
+/frontend/.env.*.local
