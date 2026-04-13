@@ -123,6 +123,13 @@ class DebuglyIssueManager:
                     results.append(result)
                     endpoint_results.append((endpoint, result))
                     log.debug(f"Successfully submitted to {endpoint.__class__.__name__}")
+                    if isinstance(result, dict) and result.get("attachments_ok") is False:
+                        log.warning(
+                            "Submission to %s finished with attachment failures: uploaded=%s failed=%s",
+                            endpoint.__class__.__name__,
+                            result.get("attachments_uploaded"),
+                            result.get("attachments_failed"),
+                        )
                     
                     # Emit progress for endpoint completion
                     if progress_callback:

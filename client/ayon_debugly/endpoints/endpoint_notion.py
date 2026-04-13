@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 import base64
+import math
 import os
-from typing import Any, Dict, List
+import random
+import time
+from typing import Any, Dict, List, Optional
 
 import ayon_api
 import requests
@@ -10,6 +13,23 @@ from ayon_debugly.debugly_issue import DebuglyIssue
 from ayon_debugly.endpoints.endpoint_base import EndpointBase
 from ayon_debugly.logger import log
 from ayon_debugly.version import __version__
+
+# Chunked upload to AYON (each chunk is base64 JSON; keep under gateway limits).
+# Ops: reverse-proxy client_max_body_size and timeouts must allow at least one chunk POST.
+UPLOAD_CHUNK_THRESHOLD_BYTES = 8 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+_POST_RETRY_MAX = 3
+_POST_RETRY_STATUSES = frozenset({500, 502, 503, 504})
+
+
+def _attachment_display_name_from_zip_base(base_name: str) -> str:
+    """Notion-friendly names: .log / .json → .txt (avoid application/json 403s)."""
+    low = base_name.lower()
+    if low.endswith(".log"):
+        return base_name[:-4] + ".txt"
+    if low.endswith(".json"):
+        return base_name[:-5] + ".txt"
+    return base_name
 
 
 class EndpointNotion(EndpointBase):
@@ -137,23 +157,25 @@ class EndpointNotion(EndpointBase):
                 log.warning(
                     "Notion database ID is not set; server will validate settings."
                 )
-
-            # Clean the database ID (remove query parameters if present)
-            if "?" in self.database_id:
-                self.database_id = self.database_id.split("?")[0]
-
-            # Ensure database ID has proper format (add dashes if missing)
-            log.debug(f"Notion endpoint: Original database ID: {self.database_id}")
-            if len(self.database_id) == 32 and "-" not in self.database_id:
-                # Convert from compact format to UUID format
-                self.database_id = f"{self.database_id[:8]}-{self.database_id[8:12]}-{self.database_id[12:16]}-{self.database_id[16:20]}-{self.database_id[20:]}"
-                log.debug(
-                    f"Notion endpoint: Converted database ID to UUID format: {self.database_id}"
-                )
             else:
-                log.debug(
-                    f"Notion endpoint: Database ID format check - length: {len(self.database_id)}, contains dashes: {'-' in self.database_id}"
-                )
+                # Keep ?v=<data_source_id> for submit payload: server prefers request
+                # database_id over settings; stripping the hint made ds_hint None and
+                # broke multi-source DB schema / property resolution.
+                raw_db = str(self.database_id).strip()
+                base, sep, qs = raw_db.partition("?")
+                suffix = f"{sep}{qs}" if sep else ""
+                db_core = base.strip()
+                log.debug("Notion endpoint: Raw database_id from settings (len=%s)", len(raw_db))
+                if len(db_core) == 32 and "-" not in db_core:
+                    db_core = (
+                        f"{db_core[:8]}-{db_core[8:12]}-{db_core[12:16]}-"
+                        f"{db_core[16:20]}-{db_core[20:]}"
+                    )
+                    log.debug(
+                        "Notion endpoint: Normalized compact DB UUID; preserving query: %s",
+                        bool(suffix),
+                    )
+                self.database_id = db_core + suffix
 
             log.debug(
                 f"Notion endpoint: Initialized with database_id: {self.database_id[:20]}..."
@@ -168,7 +190,181 @@ class EndpointNotion(EndpointBase):
             log.error(f"Notion endpoint initialization failed: {e}")
             raise ValueError(f"Failed to initialize Notion endpoint: {e}")
 
-    def submit(self, issue: DebuglyIssue, progress_callback=None) -> str:
+    @staticmethod
+    def _rest_response_to_dict(resp: Any) -> Optional[dict]:
+        if resp is None:
+            return None
+        data = getattr(resp, "data", None)
+        if isinstance(data, dict):
+            return data
+        json_fn = getattr(resp, "json", None)
+        if callable(json_fn):
+            try:
+                out = json_fn()
+                return out if isinstance(out, dict) else None
+            except Exception:
+                pass
+        text_val = getattr(resp, "text", None)
+        if isinstance(text_val, str) and text_val.strip():
+            try:
+                import json as _json
+
+                out = _json.loads(text_val)
+                return out if isinstance(out, dict) else None
+            except Exception:
+                return None
+        if isinstance(resp, dict):
+            return resp
+        return None
+
+    def _log_addon_post_shape(
+        self, label: str, resp: Any, parsed: Optional[dict]
+    ) -> None:
+        sc = int(getattr(resp, "status_code", 0) or 0)
+        if isinstance(parsed, dict) and ("success" in parsed or "error" in parsed):
+            return
+        snippet = ""
+        try:
+            t = getattr(resp, "text", None)
+            if isinstance(t, str) and t.strip():
+                snippet = t.strip()[:500]
+        except Exception:
+            pass
+        log.warning(
+            "Notion endpoint: %s unexpected response status=%s parsed=%s text_head=%r",
+            label,
+            sc,
+            type(parsed).__name__,
+            snippet,
+        )
+
+    def _post_debugly_addon(self, endpoint: str, **payload: Any) -> Any:
+        """POST with retries on transient AYON / gateway errors (versioned route only)."""
+        last_resp = None
+        for attempt in range(_POST_RETRY_MAX):
+            resp = ayon_api.post(endpoint, **payload)
+            last_resp = resp
+            sc = int(getattr(resp, "status_code", 0) or 0)
+            if sc == 200 or sc not in _POST_RETRY_STATUSES:
+                return resp
+            log.warning(
+                "Notion endpoint: %s returned HTTP %s (attempt %s/%s), retrying...",
+                endpoint,
+                sc,
+                attempt + 1,
+                _POST_RETRY_MAX,
+            )
+            time.sleep(0.4 * (2**attempt) + random.random() * 0.15)
+        return last_resp
+
+    def _post_debugly_notion_route(self, tail: str, **payload: Any) -> Any:
+        """POST the versioned addon path, then the unversioned path on 404/405.
+
+        Some gateways or older AYON builds expose addon POST routes only on the
+        unversioned path; 405 Method Not Allowed has been observed on versioned URLs.
+        """
+        t = (tail or "").lstrip("/")
+        primary = f"/addons/debugly/{__version__}/{t}"
+        resp = self._post_debugly_addon(primary, **payload)
+        sc = int(getattr(resp, "status_code", 0) or 0)
+        if sc in (404, 405):
+            log.warning(
+                "Notion endpoint: %s returned HTTP %s, retrying unversioned /addons/debugly/%s",
+                primary,
+                sc,
+                t,
+            )
+            resp = self._post_debugly_addon(f"/addons/debugly/{t}", **payload)
+        return resp
+
+    def _upload_bytes_chunked_to_server(
+        self, page_id: str, filename: str, file_bytes: bytes
+    ) -> dict:
+        """Upload large files via upload_begin / upload_chunk / upload_complete."""
+        n = max(1, math.ceil(len(file_bytes) / float(UPLOAD_CHUNK_BYTES)))
+
+        r0 = self._post_debugly_notion_route(
+            "notion/upload_begin",
+            page_id=page_id,
+            filename=filename,
+            file_size=len(file_bytes),
+            total_chunks=n,
+        )
+        d0 = self._rest_response_to_dict(r0)
+        self._log_addon_post_shape("upload_begin", r0, d0)
+        if not isinstance(d0, dict) or not d0.get("success") or not d0.get("upload_id"):
+            err = (d0 or {}).get("error") if isinstance(d0, dict) else "invalid begin response"
+            return {"error": err or "upload_begin failed"}
+
+        uid = d0["upload_id"]
+        for i in range(n):
+            start = i * UPLOAD_CHUNK_BYTES
+            chunk = file_bytes[start : start + UPLOAD_CHUNK_BYTES]
+            b64 = base64.b64encode(chunk).decode("ascii")
+            r1 = self._post_debugly_notion_route(
+                "notion/upload_chunk",
+                upload_id=uid,
+                chunk_index=i,
+                chunk_b64=b64,
+            )
+            d1 = self._rest_response_to_dict(r1)
+            self._log_addon_post_shape(f"upload_chunk[{i}]", r1, d1)
+            if not isinstance(d1, dict) or not d1.get("success"):
+                err = (d1 or {}).get("error") if isinstance(d1, dict) else "chunk failed"
+                return {"error": err or f"upload_chunk {i} failed"}
+
+        r2 = self._post_debugly_notion_route("notion/upload_complete", upload_id=uid)
+        d2 = self._rest_response_to_dict(r2)
+        self._log_addon_post_shape("upload_complete", r2, d2)
+        if not isinstance(d2, dict):
+            return {"error": "invalid complete response"}
+        if d2.get("success") and d2.get("file_id"):
+            return {
+                "success": True,
+                "file_id": d2["file_id"],
+                "filename": d2.get("filename", filename),
+            }
+        return {"error": d2.get("error", "upload_complete failed")}
+
+    def _append_upload_failures_note(
+        self,
+        page_id: str,
+        failures: List[str],
+        archive_note: Optional[str] = None,
+    ) -> None:
+        if not failures and not (archive_note or "").strip():
+            return
+        try:
+            r = self._post_debugly_notion_route(
+                "notion/append_upload_failures",
+                page_id=page_id,
+                failures=list(failures)[:80],
+                archive_note=(archive_note or "").strip() or None,
+            )
+            d = self._rest_response_to_dict(r)
+            self._log_addon_post_shape("append_upload_failures", r, d)
+            if isinstance(d, dict) and d.get("success"):
+                log.debug("Notion endpoint: Appended upload failure note to page")
+            else:
+                err = (d or {}).get("error") if isinstance(d, dict) else None
+                sc = int(getattr(r, "status_code", 0) or 0)
+                head = ""
+                try:
+                    tx = getattr(r, "text", None)
+                    if isinstance(tx, str):
+                        head = tx.strip()[:800]
+                except Exception:
+                    pass
+                log.warning(
+                    "Notion endpoint: append_upload_failures failed status=%s err=%s text_head=%r",
+                    sc,
+                    err,
+                    head,
+                )
+        except Exception as e:
+            log.warning("Notion endpoint: append_upload_failures failed: %s", e)
+
+    def submit(self, issue: DebuglyIssue, progress_callback=None):
         """
         Submit an issue to the Notion database
 
@@ -176,7 +372,7 @@ class EndpointNotion(EndpointBase):
             issue: DebuglyIssue object containing all issue data
 
         Returns:
-            str: URL of the created Notion page
+            dict: url, page_id, attachments_ok, attachment counts/failures
         """
         import ayon_api
 
@@ -270,9 +466,6 @@ class EndpointNotion(EndpointBase):
         else:
             log.warning("Notion endpoint: No database_id available to send to server")
 
-        # Call server addon endpoint (prefer versioned, fallback to unversioned on 404)
-        endpoint = f"/addons/debugly/{__version__}/notion/submit"
-        log.debug(f"Notion endpoint: Calling versioned endpoint: {endpoint}")
         log.debug(f"Notion endpoint: Final payload size: {len(str(payload))} chars")
         log.debug(
             "Notion endpoint: Pre-submit metadata issue_type=%r project=%r "
@@ -282,63 +475,20 @@ class EndpointNotion(EndpointBase):
             payload.get("pipeline_release"),
             bool(payload.get("blocks")),
         )
+        log.info(
+            "Notion endpoint: POST notion/submit metadata (snake_case; server logs should match): "
+            "issue_type=%r project=%r pipeline_release=%r database_id_sent=%r",
+            payload.get("issue_type"),
+            payload.get("project"),
+            payload.get("pipeline_release"),
+            bool(payload.get("database_id")),
+        )
 
-        try:
-            log.debug("Notion endpoint: Making first API call to server...")
-            resp = ayon_api.post(endpoint, **payload)
-            log.debug(f"Notion endpoint: First API call response type: {type(resp)}")
-            if hasattr(resp, "status_code"):
-                log.debug(f"Notion endpoint: First API call status: {resp.status_code}")
-        except Exception as e:
-            # Retry once on transient connection error
-            log.warning(f"Notion endpoint: first post failed ({e}), retrying once")
-            try:
-                resp = ayon_api.post(endpoint, **payload)
-                log.debug(
-                    f"Notion endpoint: Retry API call response type: {type(resp)}"
-                )
-                if hasattr(resp, "status_code"):
-                    log.debug(
-                        f"Notion endpoint: Retry API call status: {resp.status_code}"
-                    )
-            except Exception as e2:
-                log.error(f"Notion endpoint: Retry also failed: {e2}")
-                raise e2
-
-        if (
-            hasattr(resp, "status_code")
-            and int(getattr(resp, "status_code", 0) or 0) == 404
-        ):
-            log.warning(
-                "Notion endpoint: Versioned server route not found, retrying unversioned route"
-            )
-            endpoint = "/addons/debugly/notion/submit"
-            log.debug(f"Notion endpoint: Calling unversioned endpoint: {endpoint}")
-            try:
-                resp = ayon_api.post(endpoint, **payload)
-                log.debug(
-                    f"Notion endpoint: Unversioned API call response type: {type(resp)}"
-                )
-                if hasattr(resp, "status_code"):
-                    log.debug(
-                        f"Notion endpoint: Unversioned API call status: {resp.status_code}"
-                    )
-            except Exception as e:
-                log.warning(
-                    f"Notion endpoint: unversioned post failed ({e}), retrying once"
-                )
-                try:
-                    resp = ayon_api.post(endpoint, **payload)
-                    log.debug(
-                        f"Notion endpoint: Unversioned retry response type: {type(resp)}"
-                    )
-                    if hasattr(resp, "status_code"):
-                        log.debug(
-                            f"Notion endpoint: Unversioned retry status: {resp.status_code}"
-                        )
-                except Exception as e2:
-                    log.error(f"Notion endpoint: Unversioned retry also failed: {e2}")
-                    raise e2
+        log.debug("Notion endpoint: Calling notion/submit (versioned with 404/405 fallback)...")
+        resp = self._post_debugly_notion_route("notion/submit", **payload)
+        log.debug(f"Notion endpoint: Submit response type: {type(resp)}")
+        if hasattr(resp, "status_code"):
+            log.debug(f"Notion endpoint: Submit status: {resp.status_code}")
 
         # ayon_api.post can return a response-like or data dict depending on version
         result = None
@@ -437,6 +587,11 @@ class EndpointNotion(EndpointBase):
         if progress_callback:
             progress_callback("Page created successfully!", 33, 100)
 
+        attachments_ok = True
+        attachment_failures: List[str] = []
+        attachments_uploaded = 0
+        attachments_failed = 0
+
         # Step 2: Upload attachments individually if we have them and page creation succeeded
         if attachments_zip_b64 and page_id:
             log.debug(
@@ -445,22 +600,74 @@ class EndpointNotion(EndpointBase):
             if progress_callback:
                 progress_callback("Starting file uploads...", 50, 100)
             try:
-                uploaded_files = self._upload_attachments_individually(attachments_zip_b64, page_id, progress_callback)
-                log.debug(f"Notion endpoint: Collected {len(uploaded_files)} uploaded files for finalization")
+                up_out = self._upload_attachments_individually(
+                    attachments_zip_b64, page_id, progress_callback
+                )
+                if not isinstance(up_out, tuple) or len(up_out) != 2:
+                    log.error(
+                        "Notion endpoint: _upload_attachments_individually must return "
+                        "(uploaded_files, failure_lines); got %s",
+                        type(up_out).__name__,
+                    )
+                    raise TypeError(
+                        "_upload_attachments_individually must return a 2-tuple"
+                    )
+                uploaded_files, upload_failures = up_out
+                attachments_uploaded = len(uploaded_files)
+                attachment_failures = list(upload_failures)
+                attachments_failed = len(attachment_failures)
+                log.debug(
+                    f"Notion endpoint: Collected {len(uploaded_files)} uploaded files for finalization"
+                )
                 if uploaded_files:
-                    log.debug(f"Notion endpoint: Finalizing {len(uploaded_files)} attachments to page {page_id[:8]}...")
+                    log.debug(
+                        f"Notion endpoint: Finalizing {len(uploaded_files)} attachments to page {page_id[:8]}..."
+                    )
                     self._finalize_attachments(page_id, uploaded_files)
                 else:
-                    log.warning("Notion endpoint: No files were successfully uploaded for finalization")
-                log.debug("Notion endpoint: All attachments uploaded successfully")
-                log.debug("Notion endpoint: Step 3/3 - Complete! All files uploaded.")
-                if progress_callback:
-                    progress_callback("All files uploaded successfully!", 100, 100)
+                    log.warning(
+                        "Notion endpoint: No files were successfully uploaded for finalization"
+                    )
+                if upload_failures:
+                    attachments_ok = False
+                    self._append_upload_failures_note(
+                        page_id,
+                        upload_failures,
+                        "If the studio uses Debugly Shared Folder, the full ZIP for this report was saved there.",
+                    )
+                    log.warning(
+                        "Notion endpoint: Attachments incomplete: uploaded=%s failed=%s "
+                        "(see failure note on page and logs for details)",
+                        attachments_uploaded,
+                        attachments_failed,
+                    )
+                    if progress_callback:
+                        progress_callback(
+                            f"Uploaded {attachments_uploaded} file(s); "
+                            f"{attachments_failed} failed (see Notion page note)",
+                            95,
+                            100,
+                        )
+                else:
+                    log.debug("Notion endpoint: All listed attachments uploaded successfully")
+                    log.debug(
+                        "Notion endpoint: Step 3/3 - Complete! All files uploaded."
+                    )
+                    if progress_callback:
+                        progress_callback("All files uploaded successfully!", 100, 100)
             except Exception as e:
-                log.warning(f"Notion endpoint: Attachment upload failed: {e}")
+                attachments_ok = False
+                log.warning(f"Notion endpoint: Attachment phase failed: {e}")
                 # Don't fail the whole submission - page was created successfully
 
-        return {"url": page_url, "page_id": page_id}
+        return {
+            "url": page_url,
+            "page_id": page_id,
+            "attachments_ok": attachments_ok,
+            "attachments_uploaded": attachments_uploaded,
+            "attachments_failed": attachments_failed,
+            "attachment_failures": attachment_failures,
+        }
 
     def _upload_attachments_batch(self, attachments_zip_b64: str, page_id: str, progress_callback=None):
         """
@@ -511,13 +718,8 @@ class EndpointNotion(EndpointBase):
                         file_bytes = zf.read(zi)
                         file_b64 = base64.b64encode(file_bytes).decode("utf-8")
 
-                        # Determine display name
                         base_name = zi.filename.split("/")[-1]
-                        display_name = (
-                            base_name[:-4] + ".txt"
-                            if base_name.lower().endswith(".log")
-                            else base_name
-                        )
+                        display_name = _attachment_display_name_from_zip_base(base_name)
 
                         files_data.append({
                             "filename": display_name,
@@ -548,41 +750,22 @@ class EndpointNotion(EndpointBase):
                         "files": files_data
                     }
 
-                    # Use the batch upload endpoint
-                    endpoint = f"/addons/debugly/{__version__}/notion/upload_attachments"
-                    
-                    try:
-                        resp = ayon_api.post(endpoint, **payload)
-                        
-                        # Check for success
-                        if hasattr(resp, "status_code") and resp.status_code != 200:
-                            raise Exception(f"Server returned status {resp.status_code}")
-                        
-                        result = resp.data if hasattr(resp, 'data') else resp
-                        if result.get("success"):
-                            log.debug(f"Notion endpoint: Successfully uploaded {result.get('uploaded_count', 0)} files")
-                        else:
-                            log.warning(f"Notion endpoint: Batch upload failed: {result.get('error', 'Unknown error')}")
-                            
-                    except Exception as e:
-                        log.error(f"Notion endpoint: Batch upload failed: {e}")
-                        # Try fallback to unversioned endpoint
-                        try:
-                            endpoint = "/addons/debugly/notion/upload_attachments"
-                            resp = ayon_api.post(endpoint, **payload)
-                            
-                            if hasattr(resp, "status_code") and resp.status_code != 200:
-                                raise Exception(f"Server returned status {resp.status_code}")
-                            
-                            result = resp.data if hasattr(resp, 'data') else resp
-                            if result.get("success"):
-                                log.debug(f"Notion endpoint: Successfully uploaded {result.get('uploaded_count', 0)} files (unversioned)")
-                            else:
-                                log.warning(f"Notion endpoint: Batch upload failed: {result.get('error', 'Unknown error')}")
-                                
-                        except Exception as e2:
-                            log.error(f"Notion endpoint: Both versioned and unversioned batch upload failed: {e2}")
-                            raise e2
+                    resp = self._post_debugly_notion_route(
+                        "notion/upload_attachments", **payload
+                    )
+                    if hasattr(resp, "status_code") and resp.status_code != 200:
+                        raise Exception(
+                            f"Server returned status {resp.status_code}"
+                        )
+                    result = self._rest_response_to_dict(resp) or {}
+                    if result.get("success"):
+                        log.debug(
+                            f"Notion endpoint: Successfully uploaded {result.get('uploaded_count', 0)} files"
+                        )
+                    else:
+                        log.warning(
+                            f"Notion endpoint: Batch upload failed: {result.get('error', 'Unknown error')}"
+                        )
 
         except Exception as e:
             log.error(
@@ -590,17 +773,22 @@ class EndpointNotion(EndpointBase):
             )
             raise
 
-    def _upload_attachments_individually(self, attachments_zip_b64: str, page_id: str, progress_callback=None):
+    def _upload_attachments_individually(
+        self, attachments_zip_b64: str, page_id: str, progress_callback=None
+    ):
         """
         Upload attachments one by one to avoid timeouts.
-        Returns a list of uploaded file objects for final attachment to the page.
+
+        Returns:
+            (uploaded_file_objs, failure_lines) failure_lines are human-readable for Notion note.
         """
         import base64
         import io
         import zipfile
 
         log.debug("Notion endpoint: Extracting files from ZIP for individual upload...")
-        uploaded_files = []
+        uploaded_files: List[dict] = []
+        failure_lines: List[str] = []
 
         try:
             # Decode the base64 ZIP
@@ -632,40 +820,49 @@ class EndpointNotion(EndpointBase):
                             log.warning(
                                 f"Notion endpoint: Skipping large file {zi.filename} ({zi.file_size} bytes)"
                             )
+                            dn_skip = _attachment_display_name_from_zip_base(
+                                zi.filename.split("/")[-1]
+                            )
+                            failure_lines.append(
+                                f"{dn_skip}: skipped (exceeds 100MB server limit)"
+                            )
                             continue
 
                         # Read file data
                         file_bytes = zf.read(zi)
                         file_b64 = base64.b64encode(file_bytes).decode("utf-8")
 
-                        # Determine display name
                         base_name = zi.filename.split("/")[-1]
-                        display_name = (
-                            base_name[:-4] + ".txt"
-                            if base_name.lower().endswith(".log")
-                            else base_name
-                        )
+                        display_name = _attachment_display_name_from_zip_base(base_name)
 
                         log.debug(
                             f"Notion endpoint: Uploading file {i + 1}/{len(relevant_files)}: {display_name}"
                         )
 
-                        # Make API call for this individual file
                         result = self._upload_single_attachment(
                             page_id, display_name, file_b64, zi.file_size
                         )
-                        
+
                         if result and result.get("success"):
-                            # Add to uploaded files list
                             file_obj = {
                                 "type": "file_upload",
                                 "file_upload": {"id": result["file_id"]},
                                 "name": display_name,
                             }
                             uploaded_files.append(file_obj)
-                            log.debug(f"Notion endpoint: Added {display_name} to finalization list with ID: {result['file_id'][:8]}...")
+                            log.debug(
+                                f"Notion endpoint: Added {display_name} to finalization list with ID: {result['file_id'][:8]}..."
+                            )
                         else:
-                            log.warning(f"Notion endpoint: Upload result for {display_name} was not successful: {result}")
+                            err = (
+                                (result or {}).get("error", "unknown")
+                                if isinstance(result, dict)
+                                else "unknown"
+                            )
+                            failure_lines.append(f"{display_name}: {err}")
+                            log.warning(
+                                f"Notion endpoint: Upload result for {display_name} was not successful: {result}"
+                            )
 
                         # Emit progress update
                         progress = (i + 1) / len(relevant_files) * 100
@@ -678,18 +875,21 @@ class EndpointNotion(EndpointBase):
                             progress_callback(f"Uploading {display_name}...", int(total_progress), 100)
 
                     except Exception as e:
+                        bn = _attachment_display_name_from_zip_base(
+                            zi.filename.split("/")[-1]
+                        )
+                        failure_lines.append(f"{bn}: {e}")
                         log.warning(
                             f"Notion endpoint: Failed to upload {zi.filename}: {e}"
                         )
-                        continue  # Don't fail the whole process for one file
 
         except Exception as e:
             log.error(
                 f"Notion endpoint: Failed to process ZIP for individual uploads: {e}"
             )
             raise
-        
-        return uploaded_files
+
+        return uploaded_files, failure_lines
 
     def _finalize_attachments(self, page_id: str, uploaded_files: list):
         """Finalize attachments by updating the Notion page with all uploaded files."""
@@ -698,50 +898,27 @@ class EndpointNotion(EndpointBase):
             return
         
         log.debug(f"Notion endpoint: Finalizing {len(uploaded_files)} attachments...")
-        
+
         try:
-            # Use the server's batch update endpoint to attach all files at once
             payload = {
                 "page_id": page_id,
-                "files": uploaded_files
+                "files": uploaded_files,
             }
-            
-            # Use the finalize attachments endpoint
-            endpoint = f"/addons/debugly/{__version__}/notion/finalize_attachments"
-            
-            try:
-                resp = ayon_api.post(endpoint, **payload)
-                
-                # Check for success
-                if hasattr(resp, "status_code") and resp.status_code != 200:
-                    raise Exception(f"Server returned status {resp.status_code}")
-                
-                result = resp.data if hasattr(resp, 'data') else resp
-                if result.get("success"):
-                    log.debug(f"Notion endpoint: Successfully finalized {result.get('finalized_count', len(uploaded_files))} attachments")
-                else:
-                    log.warning(f"Notion endpoint: Finalization failed: {result.get('error', 'Unknown error')}")
-                    
-            except Exception as e:
-                log.error(f"Notion endpoint: Finalization failed: {e}")
-                # Try fallback to unversioned endpoint
-                try:
-                    endpoint = "/addons/debugly/notion/finalize_attachments"
-                    resp = ayon_api.post(endpoint, **payload)
-                    
-                    if hasattr(resp, "status_code") and resp.status_code != 200:
-                        raise Exception(f"Server returned status {resp.status_code}")
-                    
-                    result = resp.data if hasattr(resp, 'data') else resp
-                    if result.get("success"):
-                        log.debug(f"Notion endpoint: Successfully finalized {result.get('finalized_count', len(uploaded_files))} attachments (unversioned)")
-                    else:
-                        log.warning(f"Notion endpoint: Finalization failed: {result.get('error', 'Unknown error')}")
-                        
-                except Exception as e2:
-                    log.error(f"Notion endpoint: Both versioned and unversioned finalization failed: {e2}")
-                    raise e2
-                    
+            resp = self._post_debugly_notion_route(
+                "notion/finalize_attachments", **payload
+            )
+            if hasattr(resp, "status_code") and resp.status_code != 200:
+                raise Exception(f"Server returned status {resp.status_code}")
+            result = self._rest_response_to_dict(resp) or {}
+            if result.get("success"):
+                log.debug(
+                    f"Notion endpoint: Successfully finalized {result.get('finalized_count', len(uploaded_files))} attachments"
+                )
+            else:
+                log.warning(
+                    f"Notion endpoint: Finalization failed: {result.get('error', 'Unknown error')}"
+                )
+
         except Exception as e:
             log.error(f"Notion endpoint: Failed to finalize attachments: {e}")
             raise
@@ -750,102 +927,94 @@ class EndpointNotion(EndpointBase):
         self, page_id: str, filename: str, file_b64: str, file_size: int
     ):
         """
-        Upload a single attachment file to the server for processing.
+        Upload one file: small payloads use single JSON post; large use chunked session.
+        Retries transient AYON HTTP errors and Notion rate-limit (429) responses.
         """
-        payload = {
-            "page_id": page_id,
-            "filename": filename,
-            "file_b64": file_b64,
-            "file_size": file_size,
-        }
-
-        # Use the individual attachment upload endpoint
-        endpoint = f"/addons/debugly/{__version__}/notion/upload_attachment"
-
-        def _normalize_upload_result(resp):
-            if resp is None:
-                return None
-            result = getattr(resp, "data", None)
-            if not isinstance(result, dict):
-                json_fn = getattr(resp, "json", None)
-                if callable(json_fn):
-                    try:
-                        result = json_fn()
-                    except Exception:
-                        result = None
-            if not isinstance(result, dict):
-                result = resp if isinstance(resp, dict) else None
-            return result
-
         try:
-            log.debug(
-                f"Notion endpoint: Uploading {filename} ({file_size} bytes) to {endpoint}"
+            raw = base64.b64decode(file_b64 or "", validate=False)
+        except Exception as e:
+            return {"error": f"invalid base64: {e}"}
+
+        if len(raw) != int(file_size):
+            log.warning(
+                "Notion endpoint: decoded size %s != declared file_size %s for %s",
+                len(raw),
+                file_size,
+                filename,
             )
-            resp = ayon_api.post(endpoint, **payload)
 
-            # Check for success
+        def _do_small_upload() -> dict:
+            payload = {
+                "page_id": page_id,
+                "filename": filename,
+                "file_b64": base64.b64encode(raw).decode("ascii"),
+                "file_size": len(raw),
+            }
+            resp = self._post_debugly_notion_route(
+                "notion/upload_attachment", **payload
+            )
             if hasattr(resp, "status_code") and resp.status_code != 200:
-                raise Exception(f"Server returned status {resp.status_code}")
+                return {"error": f"Server returned status {resp.status_code}"}
+            result = self._rest_response_to_dict(resp)
+            return result if isinstance(result, dict) else {"error": "invalid response"}
 
-            result = _normalize_upload_result(resp)
-            if isinstance(result, dict) and result.get("error"):
-                log.warning(
-                    "Notion endpoint: Server reported upload error for %s: %s",
-                    filename,
-                    result.get("error"),
-                )
-                return result
-            if isinstance(result, dict) and result.get("success"):
+        use_chunked = len(raw) > UPLOAD_CHUNK_THRESHOLD_BYTES
+
+        for rate_try in range(3):
+            if use_chunked:
+                out = self._upload_bytes_chunked_to_server(page_id, filename, raw)
+            else:
+                out = _do_small_upload()
+
+            if out.get("success"):
                 log.debug(
                     "Notion endpoint: Successfully uploaded %s file_id=%s...",
                     filename,
-                    (result.get("file_id") or "")[:8],
+                    (out.get("file_id") or "")[:8],
                 )
-            else:
-                log.debug(
-                    "Notion endpoint: Upload response for %s: %s",
+                return out
+
+            err = str(out.get("error") or "")
+
+            # Chunked route returned 405 (routes not deployed) — fall back to
+            # direct upload_attachment which lets the server handle multi-part.
+            if use_chunked and ("405" in err or "upload_begin failed" in err):
+                log.warning(
+                    "Notion endpoint: chunked upload_begin unavailable for %s "
+                    "(405/not deployed); falling back to direct upload_attachment",
                     filename,
-                    result,
                 )
-            return result
-
-        except Exception as e:
-            log.error(f"Notion endpoint: Failed to upload {filename}: {e}")
-            # Try fallback to unversioned endpoint
-            try:
-                endpoint = "/addons/debugly/notion/upload_attachment"
-                log.debug(
-                    f"Notion endpoint: Retrying with unversioned endpoint: {endpoint}"
-                )
-                resp = ayon_api.post(endpoint, **payload)
-
-                if hasattr(resp, "status_code") and resp.status_code != 200:
-                    raise Exception(f"Server returned status {resp.status_code}")
-
-                result = _normalize_upload_result(resp)
-                if isinstance(result, dict) and result.get("error"):
-                    log.warning(
-                        "Notion endpoint: Unversioned upload error for %s: %s",
-                        filename,
-                        result.get("error"),
-                    )
-                    return result
-                if isinstance(result, dict) and result.get("success"):
+                use_chunked = False
+                out = _do_small_upload()
+                if out.get("success"):
                     log.debug(
-                        "Notion endpoint: Successfully uploaded %s (unversioned) file_id=%s...",
+                        "Notion endpoint: Successfully uploaded %s via fallback file_id=%s...",
                         filename,
-                        (result.get("file_id") or "")[:8],
+                        (out.get("file_id") or "")[:8],
                     )
-                return result
+                    return out
+                err = str(out.get("error") or "")
 
-            except Exception as e2:
-                log.error(
-                    f"Notion endpoint: Both versioned and unversioned upload failed for {filename}: {e2}"
+            if "429" in err or "rate" in err.lower():
+                wait_s = 1.5 * (2**rate_try) + random.random() * 0.3
+                log.warning(
+                    "Notion endpoint: rate limited on %s, sleeping %.1fs (try %s/3)",
+                    filename,
+                    wait_s,
+                    rate_try + 1,
                 )
-                raise e2
-        
-        # This should never be reached, but just in case
-        return None
+                time.sleep(wait_s)
+                continue
+
+            if out.get("error"):
+                log.warning(
+                    "Notion endpoint: Server reported upload error for %s: %s",
+                    filename,
+                    out.get("error"),
+                )
+            return out
+
+        return {"error": "rate limit retries exhausted"}
 
     def _build_properties(self, issue: DebuglyIssue) -> Dict[str, Any]:
         """
@@ -1680,15 +1849,16 @@ class EndpointNotion(EndpointBase):
             "Notion-Version": self.notion_version,
         }
 
-        # Create a file block
+        # Create a file block (Notion API 2026-03-11: use position, not deprecated after)
         block_data = {
+            "position": {"type": "end"},
             "children": [
                 {
                     "object": "block",
                     "type": "file",
                     "file": {"type": "external", "external": {"url": file_url}},
                 }
-            ]
+            ],
         }
 
         response = requests.patch(
@@ -2022,9 +2192,26 @@ class EndpointNotion(EndpointBase):
             dict: Dictionary containing success information
         """
         if isinstance(result, dict) and "url" in result:
+            ok = result.get("attachments_ok", True)
+            up = int(result.get("attachments_uploaded") or 0)
+            fail = int(result.get("attachments_failed") or 0)
+            if ok is False:
+                if fail > 0:
+                    total = up + fail
+                    msg = (
+                        f"Notion page created, but only {up} of {total} attachment(s) "
+                        f"uploaded ({fail} failed). Open the page for details or check logs."
+                    )
+                else:
+                    msg = (
+                        "Notion page created, but the attachment phase did not finish. "
+                        "See client logs."
+                    )
+            else:
+                msg = "Issue successfully created in Notion database"
             return {
                 "title": "Notion",
-                "message": "Issue successfully created in Notion database",
+                "message": msg,
                 "url": result["url"],
                 "file_path": None,
                 "can_open": True,
