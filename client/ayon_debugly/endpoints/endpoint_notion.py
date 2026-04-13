@@ -813,6 +813,13 @@ class EndpointNotion(EndpointBase):
                     f"Notion endpoint: Found {len(relevant_files)} files to upload individually"
                 )
 
+                if relevant_files:
+                    log.debug(
+                        "Notion endpoint: Waiting 2s before first upload "
+                        "(Notion API cooldown after page creation)"
+                    )
+                    time.sleep(2)
+
                 for i, zi in enumerate(relevant_files):
                     try:
                         # Skip very large files
@@ -979,6 +986,21 @@ class EndpointNotion(EndpointBase):
             # Chunked route returned 405 (routes not deployed) — fall back to
             # direct upload_attachment which lets the server handle multi-part.
             if use_chunked and ("405" in err or "upload_begin failed" in err):
+                if len(raw) > 5 * 1024 * 1024:
+                    log.warning(
+                        "Notion endpoint: chunked routes unavailable and %s is "
+                        "%.1f MiB — too large for direct fallback; restart AYON "
+                        "server to enable chunked upload routes",
+                        filename,
+                        len(raw) / (1024 * 1024),
+                    )
+                    return {
+                        "error": (
+                            f"File too large ({len(raw) / (1024 * 1024):.1f} MiB) "
+                            f"for direct upload; chunked routes unavailable (405). "
+                            f"Restart the AYON server to enable chunked uploads."
+                        )
+                    }
                 log.warning(
                     "Notion endpoint: chunked upload_begin unavailable for %s "
                     "(405/not deployed); falling back to direct upload_attachment",
@@ -995,10 +1017,11 @@ class EndpointNotion(EndpointBase):
                     return out
                 err = str(out.get("error") or "")
 
-            if "429" in err or "rate" in err.lower():
+            if "429" in err or "rate" in err.lower() or "403" in err:
                 wait_s = 1.5 * (2**rate_try) + random.random() * 0.3
                 log.warning(
-                    "Notion endpoint: rate limited on %s, sleeping %.1fs (try %s/3)",
+                    "Notion endpoint: %s on %s, sleeping %.1fs (try %s/3)",
+                    "403 forbidden" if "403" in err else "rate limited",
                     filename,
                     wait_s,
                     rate_try + 1,
@@ -1014,7 +1037,7 @@ class EndpointNotion(EndpointBase):
                 )
             return out
 
-        return {"error": "rate limit retries exhausted"}
+        return {"error": "upload retries exhausted (rate limit / 403)"}
 
     def _build_properties(self, issue: DebuglyIssue) -> Dict[str, Any]:
         """

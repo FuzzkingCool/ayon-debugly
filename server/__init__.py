@@ -18,7 +18,7 @@ try:
     from ayon_server.secrets import Secrets
     from ayon_server.settings import BaseSettingsModel
     from ayon_server.types import Field, OPModel
-    from pydantic import model_validator
+    from pydantic import root_validator
     from starlette.responses import Response
     # log.info("AYON server modules imported successfully")
 except Exception as e:
@@ -134,10 +134,10 @@ class NotionSubmitRequest(OPModel):
         None, title="Override Notion title property key (skip schema fetch)"
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_aliases(cls, data: Any) -> Any:
-        return _coerce_notion_submit_camel_case(data)
+    @root_validator(pre=True)
+    def _normalize_aliases(cls, values: Any) -> Any:
+        # ayon-backend uses Pydantic v1 (see ynput/ayon-backend pyproject.toml).
+        return _coerce_notion_submit_camel_case(values)
 
 
 class NotionUploadAttachmentRequest(OPModel):

@@ -23,6 +23,24 @@ def _notion_ids_equal(a: Optional[str], b: Optional[str]) -> bool:
     return str(a).replace("-", "").lower() == str(b).replace("-", "").lower()
 
 
+def _data_source_ref_id(entry: Any) -> Optional[str]:
+    """ID from a ``GET /v1/databases/{id}`` ``data_sources[]`` item.
+
+    Documented shape is ``dataSourceReferenceResponse`` (``id`` + ``name``).
+    Handle bare UUID strings or partial dicts without raising KeyError.
+    """
+    if entry is None:
+        return None
+    if isinstance(entry, str):
+        s = entry.strip()
+        return s or None
+    if isinstance(entry, dict):
+        rid = entry.get("id")
+        if rid is not None and str(rid).strip():
+            return str(rid).strip()
+    return None
+
+
 # Notion File Upload API: single_part for <= 20 MiB; multi_part + complete above that.
 # See https://developers.notion.com/guides/data-apis/sending-larger-files
 NOTION_SINGLE_PART_MAX_BYTES = 20 * 1024 * 1024
@@ -630,31 +648,56 @@ class NotionService:
                     log.debug(f"Database response: {data}")
                     return None
 
-                selected_source = None
+                selected_entry: Any = None
                 hint = self._data_source_id_hint
                 if hint:
                     for ds in data_sources:
-                        ds_id = ds.get("id")
+                        ds_id = _data_source_ref_id(ds)
                         if ds_id and _notion_ids_equal(ds_id, hint):
-                            selected_source = ds
+                            selected_entry = ds
+                            nm = (
+                                selected_entry.get("name", "")
+                                if isinstance(selected_entry, dict)
+                                else ""
+                            )
                             log.info(
                                 "Notion: using data_source from URL ?v= hint "
                                 "(name=%r id=%s...)",
-                                ds.get("name", ""),
+                                nm,
                                 str(ds_id).replace("-", "")[:8],
                             )
                             break
-                    if selected_source is None:
+                    if selected_entry is None:
                         log.warning(
                             "Notion: data_source_id_hint %s... not in this database's "
-                            "data_sources (%d listed); falling back to first source",
+                            "data_sources (%d listed); falling back to first usable",
                             hint.replace("-", "")[:8],
                             len(data_sources),
                         )
-                if selected_source is None:
-                    selected_source = data_sources[0]
-                self._data_source_id = selected_source["id"]
-                source_name = selected_source.get("name", "Unknown")
+                if selected_entry is None:
+                    selected_entry = data_sources[0]
+
+                resolved = _data_source_ref_id(selected_entry)
+                if not resolved:
+                    for ds in data_sources:
+                        resolved = _data_source_ref_id(ds)
+                        if resolved:
+                            selected_entry = ds
+                            break
+                if not resolved:
+                    log.error(
+                        "Notion: data_sources had no usable id (expected id+name refs). "
+                        "Raw: %s",
+                        data_sources,
+                    )
+                    return None
+
+                self._data_source_id = resolved
+                source_name = (
+                    selected_entry.get("name", "Unknown")
+                    if isinstance(selected_entry, dict)
+                    else "Unknown"
+                )
 
                 log.debug(
                     f"✓ Selected data source: '{source_name}' (ID: {self._data_source_id[:8]}...)"
