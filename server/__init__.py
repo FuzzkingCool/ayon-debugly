@@ -678,7 +678,14 @@ class Debugly(BaseServerAddon):
             import traceback
 
             log.error(f"Debugly Notion: Upload traceback: {traceback.format_exc()}")
-            return {"success": False, "error": f"Attachment upload failed: {e}"}
+            detail = str(e).strip()
+            if len(detail) > 2500:
+                detail = detail[:2500] + "…"
+            return {
+                "success": False,
+                "error": f"Attachment upload failed: {e}",
+                "notion_detail": detail,
+            }
 
     async def _upload_file_bytes_direct(
         self, token: str, filename: str, content_type: str, file_bytes: bytes

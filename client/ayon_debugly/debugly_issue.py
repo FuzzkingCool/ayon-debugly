@@ -70,6 +70,14 @@ class DebuglyIssue:
             d["pipeline_release"] = self.pipeline_release
         return d
 
+    def _issue_dict_for_zip(self) -> dict:
+        """Manifest for issue.json inside the ZIP: no embedded collected_data (see collected_data.json)."""
+        d = self.to_dict()
+        d.pop("collected_data", None)
+        if self.collected_data_file and os.path.exists(self.collected_data_file):
+            d["collected_data_in_archive"] = "collected_data.json"
+        return d
+
     @classmethod
     def from_dict(cls, data, attachments=None, screenshot=None):
         return cls(
@@ -95,7 +103,7 @@ class DebuglyIssue:
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
             dest_path = tmp.name
         with zipfile.ZipFile(dest_path, "w") as z:
-            z.writestr("issue.json", json.dumps(self.to_dict(), indent=2))
+            z.writestr("issue.json", json.dumps(self._issue_dict_for_zip(), indent=2))
             
             # Add collected data file
             if self.collected_data_file and os.path.exists(self.collected_data_file):
@@ -122,7 +130,7 @@ class DebuglyIssue:
                         name, ext = os.path.splitext(base_name)
                         redacted_name = f"{name}_redacted{ext}"
                         z.writestr(os.path.join("logs", redacted_name), redacted_content)
-                    except Exception as e:
+                    except Exception:
                         # If redaction fails, skip this file for safety
                         continue
         return dest_path
@@ -142,6 +150,11 @@ class DebuglyIssue:
     def from_zip(cls, zip_path):
         with zipfile.ZipFile(zip_path, "r") as z:
             data = json.loads(z.read("issue.json").decode("utf-8"))
+            data.pop("collected_data_in_archive", None)
+            if not data.get("collected_data") and "collected_data.json" in z.namelist():
+                data["collected_data"] = json.loads(
+                    z.read("collected_data.json").decode("utf-8")
+                )
             # Optionally extract attachments/screenshot if needed
             attachments = []
             for f in z.namelist():

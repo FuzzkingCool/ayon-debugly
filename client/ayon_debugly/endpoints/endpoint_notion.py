@@ -20,6 +20,8 @@ UPLOAD_CHUNK_THRESHOLD_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
 _POST_RETRY_MAX = 3
 _POST_RETRY_STATUSES = frozenset({500, 502, 503, 504})
+# Delay between successive Notion file uploads (reduces burst 403 / rate limits).
+NOTION_INTER_UPLOAD_DELAY_SEC = 0.85
 
 
 def _attachment_display_name_from_zip_base(base_name: str) -> str:
@@ -703,6 +705,8 @@ class EndpointNotion(EndpointBase):
                     f"Notion endpoint: Found {len(relevant_files)} files to upload in batch"
                 )
 
+                relevant_files.sort(key=lambda zi: zi.file_size)
+
                 # Prepare files data for batch upload
                 files_data = []
                 for i, zi in enumerate(relevant_files):
@@ -813,6 +817,8 @@ class EndpointNotion(EndpointBase):
                     f"Notion endpoint: Found {len(relevant_files)} files to upload individually"
                 )
 
+                relevant_files.sort(key=lambda zi: zi.file_size)
+
                 if relevant_files:
                     log.debug(
                         "Notion endpoint: Waiting 2s before first upload "
@@ -822,6 +828,8 @@ class EndpointNotion(EndpointBase):
 
                 for i, zi in enumerate(relevant_files):
                     try:
+                        if i > 0:
+                            time.sleep(NOTION_INTER_UPLOAD_DELAY_SEC)
                         # Skip very large files
                         if zi.file_size > 100 * 1024 * 1024:  # 100MB limit
                             log.warning(
@@ -866,6 +874,13 @@ class EndpointNotion(EndpointBase):
                                 if isinstance(result, dict)
                                 else "unknown"
                             )
+                            nd = (
+                                (result or {}).get("notion_detail")
+                                if isinstance(result, dict)
+                                else None
+                            )
+                            if nd:
+                                err = f"{err} | {nd}"
                             failure_lines.append(f"{display_name}: {err}")
                             log.warning(
                                 f"Notion endpoint: Upload result for {display_name} was not successful: {result}"
@@ -961,11 +976,24 @@ class EndpointNotion(EndpointBase):
                 "notion/upload_attachment", **payload
             )
             if hasattr(resp, "status_code") and resp.status_code != 200:
-                return {"error": f"Server returned status {resp.status_code}"}
+                detail = ""
+                try:
+                    if getattr(resp, "text", None):
+                        detail = (resp.text or "")[:2500]
+                    elif hasattr(resp, "data") and resp.data is not None:
+                        detail = str(resp.data)[:2500]
+                except Exception:
+                    detail = ""
+                return {
+                    "error": f"Server returned status {resp.status_code}",
+                    "notion_detail": detail,
+                }
             result = self._rest_response_to_dict(resp)
             return result if isinstance(result, dict) else {"error": "invalid response"}
 
         use_chunked = len(raw) > UPLOAD_CHUNK_THRESHOLD_BYTES
+
+        last_server_error = ""
 
         for rate_try in range(3):
             if use_chunked:
@@ -982,6 +1010,11 @@ class EndpointNotion(EndpointBase):
                 return out
 
             err = str(out.get("error") or "")
+            nd = str(out.get("notion_detail") or "").strip()
+            if nd:
+                last_server_error = f"{err} | {nd}" if err else nd
+            elif err:
+                last_server_error = err
 
             # Chunked route returned 405 (routes not deployed) — fall back to
             # direct upload_attachment which lets the server handle multi-part.
@@ -1016,15 +1049,21 @@ class EndpointNotion(EndpointBase):
                     )
                     return out
                 err = str(out.get("error") or "")
+                nd_fb = str(out.get("notion_detail") or "").strip()
+                if nd_fb:
+                    last_server_error = f"{err} | {nd_fb}" if err else nd_fb
+                elif err:
+                    last_server_error = err
 
             if "429" in err or "rate" in err.lower() or "403" in err:
                 wait_s = 1.5 * (2**rate_try) + random.random() * 0.3
                 log.warning(
-                    "Notion endpoint: %s on %s, sleeping %.1fs (try %s/3)",
+                    "Notion endpoint: %s on %s, sleeping %.1fs (try %s/3); last_error=%s",
                     "403 forbidden" if "403" in err else "rate limited",
                     filename,
                     wait_s,
                     rate_try + 1,
+                    last_server_error[:1200] if last_server_error else err,
                 )
                 time.sleep(wait_s)
                 continue
@@ -1033,11 +1072,19 @@ class EndpointNotion(EndpointBase):
                 log.warning(
                     "Notion endpoint: Server reported upload error for %s: %s",
                     filename,
-                    out.get("error"),
+                    last_server_error or out.get("error"),
                 )
             return out
 
-        return {"error": "upload retries exhausted (rate limit / 403)"}
+        log.warning(
+            "Notion endpoint: upload retries exhausted for %s; last_error=%s",
+            filename,
+            (last_server_error or "")[:2000],
+        )
+        return {
+            "error": "upload retries exhausted (rate limit / 403)",
+            "notion_detail": (last_server_error or "")[:2500],
+        }
 
     def _build_properties(self, issue: DebuglyIssue) -> Dict[str, Any]:
         """

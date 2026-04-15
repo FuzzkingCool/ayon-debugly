@@ -213,7 +213,7 @@ def _upload_file_bytes_single_part(
                 timeout=(30, upload_timeout),
             )
             if resp2.status_code == 403 and send_attempt < 2:
-                body = (resp2.text or "")[:500]
+                body = (resp2.text or "")[:2000]
                 log.warning(
                     "Notion single_part: 403 on send for %s (attempt %s/3): %s",
                     file_name,
@@ -751,8 +751,9 @@ class NotionService:
                         "Check integration capabilities and that the database is "
                         "accessible with Notion-Version 2025-09-03."
                     )
+                # Avoid {…} in the message text — nxtools may apply str.format and raise KeyError.
                 log.info(
-                    "Notion schema: loaded %d properties from GET /data_sources/{id} "
+                    "Notion schema: loaded %d properties from GET /v1/data_sources/<id> "
                     "(matches data_source_id page parent; id=%s...)",
                     len(ds_properties),
                     str(data_source_id).replace("-", "")[:8],
@@ -768,7 +769,7 @@ class NotionService:
             data = resp.json()
             properties = data.get("properties") or {}
             log.info(
-                "Notion schema: loaded %d properties from GET /databases/{id} "
+                "Notion schema: loaded %d properties from GET /v1/databases/<id> "
                 "(no data source or empty data-source schema)",
                 len(properties),
             )
