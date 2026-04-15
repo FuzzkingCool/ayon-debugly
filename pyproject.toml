@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "Debugly"
-version = "0.6.0"
+version = "0.6.6"
 description = "Debugly Addon"
 authors = ["Aleks Berland"]
 license = "MIT License"
@@ -15,9 +15,11 @@ ayon = "^0.1.0"
 qtpy = "^2.4.3"
 requests = "^2.32.3"
 nxtools = "^1.6"
-pydantic = "^2.12.2"
+# Match ynput/ayon-backend (server runtime for addons)
+pydantic = "1.10.25"
 
 [tool.poetry.group.dev.dependencies]
+python-dotenv = "^1.0.1"
 tomlkit = "^0.13.2"
 requests = "^2.32.3"
 mkdocs-material = "^9.6.7"
