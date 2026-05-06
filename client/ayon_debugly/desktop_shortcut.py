@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """Create desktop shortcut for AYON Staging (Windows .lnk, macOS .app).
-Uses only stdlib: subprocess + PowerShell on Windows, no pywin32.
+
+Windows: subprocess + PowerShell, no pywin32.
+
+macOS: resolve Desktop via ``NSDesktopDirectory`` (``pyobjc-framework-Cocoa`` /
+Foundation) when available; otherwise ``osascript`` (localized folder, no extra
+deps); last resort ``~/Desktop`` with a warning (wrong under localized names).
 """
 import os
 import platform
@@ -15,10 +20,84 @@ SHORTCUT_NAME_WIN = "AYON Staging.lnk"
 SHORTCUT_NAME_MAC = "AYON Staging.app"
 
 
+def _get_desktop_path_via_osascript():
+    """Resolve Desktop using AppleScript (works when folder name is localized)."""
+    r = subprocess.run(
+        ["osascript", "-e", "POSIX path of (path to desktop folder)"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if r.returncode != 0:
+        err = (r.stderr or "").strip()
+        raise RuntimeError(err or "osascript failed")
+    path = (r.stdout or "").strip().rstrip("\n")
+    if not path:
+        raise RuntimeError("osascript returned empty path")
+    return path
+
+
+def _get_desktop_path_darwin_foundation():
+    """Resolve Desktop via NSFileManager (correct for all UI languages)."""
+    from pathlib import Path
+
+    from Foundation import NSFileManager, NSDesktopDirectory, NSUserDomainMask
+
+    fm = NSFileManager.defaultManager()
+    result = fm.URLForDirectory_inDomain_appropriateForURL_create_error_(
+        NSDesktopDirectory,
+        NSUserDomainMask,
+        None,
+        False,
+        None,
+    )
+    if isinstance(result, tuple):
+        url = result[0]
+        error = result[1] if len(result) > 1 else None
+    else:
+        url = result
+        error = None
+
+    if error is not None:
+        raise RuntimeError(f"Could not resolve Desktop folder: {error}")
+    if url is None:
+        raise RuntimeError("Could not resolve Desktop folder: URL is None")
+
+    path_str = str(url.path())
+    return str(Path(path_str))
+
+
+def _get_desktop_path_darwin():
+    """Desktop path on macOS: Foundation, then osascript, then ~/Desktop."""
+    try:
+        return _get_desktop_path_darwin_foundation()
+    except ImportError:
+        log.debug(
+            "Foundation (PyObjC) not available; install pyobjc-framework-Cocoa "
+            "for native Desktop resolution, or rely on osascript fallback"
+        )
+    except Exception as e:
+        log.warning("NSFileManager Desktop resolution failed: %s", e)
+
+    try:
+        return _get_desktop_path_via_osascript()
+    except Exception as e:
+        log.warning("osascript Desktop resolution failed: %s", e)
+
+    fallback = os.path.expanduser("~/Desktop")
+    log.warning(
+        "Using ~/Desktop for staging shortcut; wrong if Desktop is localized: %s",
+        fallback,
+    )
+    return fallback
+
+
 def _get_desktop_path():
     """Return the user's Desktop directory."""
     if platform.system() == "Windows":
         return os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+    if platform.system() == "Darwin":
+        return _get_desktop_path_darwin()
     return os.path.expanduser("~/Desktop")
 
 
