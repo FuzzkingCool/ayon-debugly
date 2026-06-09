@@ -136,7 +136,11 @@ class DebuglyIssueManager:
                         progress_callback(f"Completed {endpoint.__class__.__name__}", i + 1, len(self.endpoints))
                         
                 except Exception as e:
-                    failed_endpoints.append(f"{endpoint.__class__.__name__}: {e}")
+                    err_text = str(e)
+                    failed_endpoints.append(f"{endpoint.__class__.__name__}: {err_text}")
+                    endpoint_results.append(
+                        (endpoint, {"failed": True, "error": err_text})
+                    )
                     log.error(f"Failed to submit to {endpoint.__class__.__name__}: {e}")
                     log.error(traceback.format_exc())
                     

@@ -210,8 +210,34 @@ class SubmissionWorker(QtCore.QObject):
                 pipeline_release=self.pipeline_release,
             )
             
-            log.debug(f"Report submitted successfully to {len(results)} endpoint(s)")
-            self.progress.emit("Report submitted successfully!", 100, 100)
+            endpoint_failures = [
+                res.get("error")
+                for _, res in results
+                if isinstance(res, dict) and res.get("failed")
+            ]
+            attachment_issues = any(
+                isinstance(res, dict) and res.get("attachments_ok") is False
+                for _, res in results
+            )
+            if endpoint_failures:
+                log.warning(
+                    "Report submitted with endpoint failure(s): %s",
+                    "; ".join(endpoint_failures),
+                )
+                self.progress.emit(
+                    "Report partially submitted — see warnings", 100, 100
+                )
+            elif attachment_issues:
+                log.warning(
+                    "Report submitted to %s endpoint(s) with attachment failures",
+                    len(results),
+                )
+                self.progress.emit(
+                    "Report submitted with attachment warnings", 100, 100
+                )
+            else:
+                log.debug(f"Report submitted successfully to {len(results)} endpoint(s)")
+                self.progress.emit("Report submitted successfully!", 100, 100)
             self.finished.emit(results)
         except Exception as e:
             log.error(f"Report submission failed: {e}")
@@ -1503,8 +1529,27 @@ class DebuglyMainWindow(QtWidgets.QWidget):
         
         # Show success dialog with endpoint-specific information
         show_success_dialog(results, self)
-        
-        self.statusLabel.setText(f"Report submitted to {len(results)} endpoint(s)")
+
+        endpoint_failures = [
+            res.get("error")
+            for _, res in results
+            if isinstance(res, dict) and res.get("failed")
+        ]
+        attachment_issues = any(
+            isinstance(res, dict) and res.get("attachments_ok") is False
+            for _, res in results
+        )
+        if endpoint_failures:
+            self.statusLabel.setText(
+                f"Partial submit: {len(endpoint_failures)} endpoint(s) failed"
+            )
+        elif attachment_issues:
+            self.statusLabel.setText(
+                f"Report submitted to {len(results)} endpoint(s) "
+                "(attachments incomplete — deploy server addon or see Notion page)"
+            )
+        else:
+            self.statusLabel.setText(f"Report submitted to {len(results)} endpoint(s)")
         log.debug(f"Report submitted to {len(results)} endpoint(s)")
         
         # Close the Debugly window after successful submission

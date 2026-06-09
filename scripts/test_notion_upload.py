@@ -12,8 +12,10 @@ Usage (from repo root, with venv that has requests + nxtools):
 Optional:
   python scripts/test_notion_upload.py --no-issue   # only upload bytes (no DB row)
   python scripts/test_notion_upload.py --small-only # skip ~21 MiB multi-part test
-  python scripts/test_notion_upload.py --chunk-session-only
-      # local AYON addon upload_begin/chunk/complete assembly only (no token)
+  python scripts/test_notion_upload.py --list-entries-only
+      # offline check of list_zip_attach_entries member selection (no token/network)
+  python scripts/test_notion_upload.py --zip-bundle-pass
+      # server-side attach_zip_bytes_to_page with many small ZIP members + read-back
 
 Reproduce production-like failing filenames (403 on …/file_uploads/…/send in client logs):
   python scripts/test_notion_upload.py --repro-failing-names
@@ -21,9 +23,10 @@ Reproduce production-like failing filenames (403 on …/file_uploads/…/send in
       # also create a test row and PATCH Attachments with successful uploads
 
 Multipart here hits Notion directly (NOTION_SINGLE_PART_MAX_BYTES + 1). If that fails but
-small .txt works, the integration or plan may block large/multi-part uploads. AYON HTTP 405
-on upload_begin/append_upload_failures is a **server deploy** issue (routes not mounted);
-this script does not call AYON for uploads.
+small .txt works, the integration or plan may block large/multi-part uploads. The client
+sends the whole report ZIP to the server in one notion/attach_bundle request; AYON HTTP 405
+on that route is a **server deploy** issue (route not mounted). This script does not call
+AYON for uploads except --list-entries-only (which is pure/offline).
 
 Properties (Issue Type / Project / Pipeline) are verified with:
   python scripts/test_notion_properties.py --create --assert-properties \\
@@ -79,51 +82,175 @@ def _normalize_notion_uuid(value: str) -> str:
     return f"{s[:8]}-{s[8:12]}-{s[12:16]}-{s[16:20]}-{s[20:]}"
 
 
-def _run_chunk_session_test(log: logging.Logger) -> int:
-    """Mirror client UPLOAD_CHUNK_BYTES (4 MiB) and >20 MiB total against upload_sessions."""
-    import math
+def _count_page_attachments(
+    token: str, page_id: str, notion_version: str
+) -> int:
+    import requests
 
-    from notion_upload_sessions import (  # noqa: E402
-        MAX_FILE_BYTES,
-        add_chunk,
-        begin,
-        complete,
+    resp = requests.get(
+        f"https://api.notion.com/v1/pages/{page_id}/properties/Attachments",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": notion_version,
+        },
+        timeout=(30, 120),
     )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"GET Attachments property failed: HTTP {resp.status_code} {resp.text[:500]}"
+        )
+    return len((resp.json() or {}).get("files") or [])
 
-    chunk_bytes = 4 * 1024 * 1024
-    target = min(21 * 1024 * 1024, MAX_FILE_BYTES - 1)
-    blob = b"Z" * target
-    n = max(1, math.ceil(len(blob) / float(chunk_bytes)))
-    page_id = "00000000-0000-4000-8000-000000000001"
-    fname = "debugly_chunk_session_test.bin"
+
+def _run_zip_bundle_pass(
+    log: logging.Logger,
+    token: str,
+    database_id: str,
+    ds_hint: str | None,
+    *,
+    small_file_count: int = 18,
+) -> int:
+    """Exercise attach_zip_bytes_to_page (rate-limited server pass) and read-back count."""
+    import io
+    import zipfile
+
+    from notion_service import NotionService  # noqa: E402
+
+    svc = NotionService(
+        token=token,
+        database_id=database_id,
+        data_source_id_hint=ds_hint,
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("issue.json", '{"title":"zip-bundle-test"}\n')
+        zf.writestr("collected_data.json", '{"env":{}}\n')
+        for i in range(small_file_count):
+            zf.writestr(
+                f"logs/test_log_{i:02d}.log",
+                f"log line {i}\n" * 32,
+            )
+        zf.writestr(
+            "attachments/screenshot_note.txt",
+            b"attachment payload for zip bundle pass\n",
+        )
+        mp_size = 21 * 1024 * 1024
+        zf.writestr(
+            "attachments/large_multipart.txt",
+            b"M" * mp_size,
+        )
+    zip_bytes = buf.getvalue()
+    expected_members = small_file_count + 4  # issue, collected_data, screenshot, large
+
+    title = f"[Debugly zip bundle pass] {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    log.info("Creating page for zip bundle pass: %s", title)
+    result = svc.submit_issue(
+        title=title,
+        user_message="scripts/test_notion_upload.py --zip-bundle-pass",
+        collected_data={},
+        tags=[],
+        attachments_zip_b64=None,
+        assignee_id="",
+        async_attachments=False,
+        issue_type="Bug",
+        project="Studio",
+        pipeline_release="production",
+    )
+    page_id = result.get("page_id") or ""
+    if not page_id:
+        log.error("submit_issue failed: %r", result)
+        return 20
+
     log.info(
-        "AYON upload session: %s bytes in %d chunks of <= %s",
-        len(blob),
-        n,
-        chunk_bytes,
+        "Running attach_zip_bytes_to_page (%s byte ZIP, ~%s members)...",
+        len(zip_bytes),
+        expected_members,
     )
-    b0 = begin(page_id, fname, len(blob), n)
-    if not b0.get("success"):
-        log.error("begin failed: %r", b0)
+    out = svc.attach_zip_bytes_to_page(zip_bytes, page_id)
+    log.info("attach_zip_bytes_to_page result: %r", out)
+    uploaded = int(out.get("attachments_uploaded") or 0)
+    failed = int(out.get("attachments_failed") or 0)
+    if failed:
+        log.warning("Failures (%s): %s", failed, out.get("attachment_failures"))
+
+    on_page = _count_page_attachments(token, page_id, svc.notion_version)
+    log.info(
+        "Read-back Attachments count=%s (uploaded=%s expected~=%s)",
+        on_page,
+        uploaded,
+        expected_members,
+    )
+    if on_page != uploaded:
+        log.error("Read-back count %s != reported uploaded %s", on_page, uploaded)
+        return 21
+    if uploaded < expected_members - 1:
+        log.error(
+            "Too few attachments on page: got %s expected at least %s",
+            uploaded,
+            expected_members - 1,
+        )
+        return 22
+    log.info("OK zip bundle pass. url=%s", result.get("url"))
+    return 0
+
+
+def _run_list_entries_test(log: logging.Logger) -> int:
+    """Offline check that list_zip_attach_entries selects + renames members correctly."""
+    import io
+    import zipfile
+
+    from notion_service import list_zip_attach_entries  # noqa: E402
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("issue.json", '{"title":"t"}\n')
+        zf.writestr("collected_data.json", '{"env":{}}\n')
+        zf.writestr("logs/app.log", b"log\n" * 10)
+        zf.writestr("attachments/note.txt", b"note\n")
+        zf.writestr("screenshot/shot.png", b"\x89PNG\r\n\x1a\n")
+        # Members outside the relevant set must be ignored.
+        zf.writestr("ignored/other.bin", b"x")
+        zf.writestr("root_file.txt", b"x")
+    entries = list_zip_attach_entries(buf.getvalue())
+
+    by_path = {zip_path: display for zip_path, display, _ in entries}
+    expected_paths = {
+        "issue.json",
+        "collected_data.json",
+        "logs/app.log",
+        "attachments/note.txt",
+        "screenshot/shot.png",
+    }
+    got_paths = set(by_path)
+    if got_paths != expected_paths:
+        log.error(
+            "Member selection mismatch: got=%s expected=%s (extra=%s missing=%s)",
+            sorted(got_paths),
+            sorted(expected_paths),
+            sorted(got_paths - expected_paths),
+            sorted(expected_paths - got_paths),
+        )
         return 10
-    uid = b0["upload_id"]
-    for i in range(n):
-        start = i * chunk_bytes
-        piece = blob[start : start + chunk_bytes]
-        r = add_chunk(uid, i, piece)
-        if not r.get("success"):
-            log.error("add_chunk %s failed: %r", i, r)
+
+    # .log / .json display names must become .txt to avoid Notion 403 on those types.
+    renames = {
+        "issue.json": "issue.txt",
+        "collected_data.json": "collected_data.txt",
+        "logs/app.log": "app.txt",
+        "attachments/note.txt": "note.txt",
+        "screenshot/shot.png": "shot.png",
+    }
+    for zip_path, expected_name in renames.items():
+        if by_path.get(zip_path) != expected_name:
+            log.error(
+                "Display-name mismatch for %s: got %r expected %r",
+                zip_path,
+                by_path.get(zip_path),
+                expected_name,
+            )
             return 11
-    done = complete(uid)
-    if not done.get("success"):
-        log.error("complete failed: %r", done)
-        return 12
-    got = done.get("file_bytes")
-    if got != blob:
-        log.error("assembled mismatch: got %s want %s", len(got or b""), len(blob))
-        return 13
-    log.info("OK chunk session id=%s... assembled=%s bytes", uid[:8], len(blob))
-    del blob, got
+
+    log.info("OK list_zip_attach_entries: %d members, .log/.json -> .txt", len(entries))
     return 0
 
 
@@ -322,7 +449,7 @@ def _run_repro_failing_names(
                 len(files_payload),
             )
             try:
-                svc._update_page_attachments(page_id, files_payload)
+                svc._set_page_attachments(page_id, files_payload)
                 log.info("Done. url=%s", result.get("url"))
             except Exception as e:
                 log.error("PATCH Attachments failed: %s", e)
@@ -348,9 +475,9 @@ def main() -> int:
         help="Skip multi-part test (no large in-memory blob)",
     )
     parser.add_argument(
-        "--chunk-session-only",
+        "--list-entries-only",
         action="store_true",
-        help="Only test in-memory AYON upload session assembly (~21 MiB, no Notion API)",
+        help="Offline: verify list_zip_attach_entries member selection + .txt renames (no Notion API)",
     )
     parser.add_argument(
         "--repro-failing-names",
@@ -363,6 +490,12 @@ def main() -> int:
         action="store_true",
         help="With --repro-failing-names: create a test row and PATCH Attachments with "
         "successful file_upload ids",
+    )
+    parser.add_argument(
+        "--zip-bundle-pass",
+        action="store_true",
+        help="Create a multi-member report ZIP and run attach_zip_bytes_to_page; "
+        "verify read-back Attachments count",
     )
     args = parser.parse_args()
 
@@ -379,8 +512,8 @@ def main() -> int:
     )
     log = logging.getLogger("test_notion_upload")
 
-    if args.chunk_session_only:
-        return _run_chunk_session_test(log)
+    if args.list_entries_only:
+        return _run_list_entries_test(log)
 
     env_path = ROOT / ".env"
     if load_dotenv:
@@ -410,6 +543,9 @@ def main() -> int:
             ds_hint,
             attach_page=args.repro_attach_page,
         )
+
+    if args.zip_bundle_pass:
+        return _run_zip_bundle_pass(log, token, database_id, ds_hint)
 
     from notion_service import (  # noqa: E402
         NOTION_SINGLE_PART_MAX_BYTES,
@@ -506,7 +642,7 @@ def main() -> int:
         )
 
     log.info("Patching page Attachments with %d file(s)", len(files_payload))
-    svc._update_page_attachments(page_id, files_payload)
+    svc._set_page_attachments(page_id, files_payload)
     log.info("Done. Check Notion row: %s", page_url)
     return 0
 

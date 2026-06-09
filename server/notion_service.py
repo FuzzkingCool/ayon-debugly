@@ -2,6 +2,7 @@ import base64
 import html as _html
 import io
 import threading
+import time
 import zipfile
 from typing import Any, Dict, Optional
 
@@ -46,6 +47,114 @@ def _data_source_ref_id(entry: Any) -> Optional[str]:
 NOTION_SINGLE_PART_MAX_BYTES = 20 * 1024 * 1024
 NOTION_MULTIPART_CHUNK_BYTES = 10 * 1024 * 1024
 NOTION_MULTIPART_MAX_PARTS = 1000
+NOTION_ATTACHMENTS_PATCH_BATCH = 50
+NOTION_RATE_CAPACITY = 3.0
+NOTION_RATE_REFILL_PER_SEC = 2.5
+NOTION_RATE_MAX_CUMULATIVE_WAIT_SEC = 120.0
+ATTACHMENT_MAX_BYTES = 100 * 1024 * 1024
+SHARED_FOLDER_ARCHIVE_HINT = (
+    "If the studio uses Debugly Shared Folder, the full ZIP for this report "
+    "was saved there."
+)
+
+
+class NotionRateLimiter:
+    """Process-wide token bucket (~2.5 req/s) for all outbound Notion API calls."""
+
+    def __init__(
+        self,
+        *,
+        capacity: float = NOTION_RATE_CAPACITY,
+        refill_per_sec: float = NOTION_RATE_REFILL_PER_SEC,
+    ) -> None:
+        self._lock = threading.Lock()
+        self._capacity = capacity
+        self._tokens = capacity
+        self._refill_per_sec = refill_per_sec
+        self._last_refill = time.monotonic()
+        self._not_before = 0.0
+
+    def _refill(self, now: float) -> None:
+        elapsed = now - self._last_refill
+        if elapsed <= 0:
+            return
+        self._tokens = min(
+            self._capacity, self._tokens + elapsed * self._refill_per_sec
+        )
+        self._last_refill = now
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._refill(now)
+                if now < self._not_before:
+                    delay = self._not_before - now
+                elif self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                else:
+                    delay = (1.0 - self._tokens) / self._refill_per_sec
+            time.sleep(delay)
+
+    def penalize(self, seconds: float) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._not_before = max(self._not_before, now + max(0.0, seconds))
+
+
+_NOTION_RATE_LIMITER = NotionRateLimiter()
+
+
+def _parse_retry_after_seconds(response: "requests.Response") -> float:
+    raw = (response.headers.get("Retry-After") or "").strip()
+    if not raw:
+        return 1.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 1.0
+
+
+def _notion_request(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json_body: Optional[dict[str, Any]] = None,
+    files: Optional[Any] = None,
+    data: Optional[Any] = None,
+    timeout: tuple[int, int] = (30, 600),
+    operation: str = "",
+) -> requests.Response:
+    """Issue one Notion HTTP request through the shared rate limiter."""
+    op = operation or f"{method} {url}"
+    cumulative_wait = 0.0
+    while True:
+        _NOTION_RATE_LIMITER.acquire()
+        resp = requests.request(
+            method,
+            url,
+            headers=headers,
+            json=json_body,
+            files=files,
+            data=data,
+            timeout=timeout,
+        )
+        if resp.status_code != 429:
+            return resp
+        retry_after = _parse_retry_after_seconds(resp)
+        _NOTION_RATE_LIMITER.penalize(retry_after)
+        log.warning(
+            "Notion %s: rate limited (429), Retry-After=%.1fs cumulative_wait=%.1fs",
+            op,
+            retry_after,
+            cumulative_wait,
+        )
+        if cumulative_wait + retry_after > NOTION_RATE_MAX_CUMULATIVE_WAIT_SEC:
+            _notion_raise_for_status(op, resp)
+        cumulative_wait += retry_after
+        time.sleep(retry_after)
 
 
 def _notion_json_headers(token: str, notion_version: str) -> dict[str, str]:
@@ -125,6 +234,13 @@ def upload_file_bytes_to_notion(
     )
 
 
+def _is_expired_file_upload_403(response: "requests.Response") -> bool:
+    if response.status_code != 403:
+        return False
+    body = (response.text or "").lower()
+    return "expir" in body or "not found" in body
+
+
 def _upload_file_bytes_single_part(
     *,
     token: str,
@@ -136,17 +252,20 @@ def _upload_file_bytes_single_part(
     upload_timeout: int,
 ) -> str:
     file_size = len(file_bytes)
-    # Omit explicit mode: default is single_part per Notion OpenAPI / small-file guide.
     create_payload = {
         "filename": file_name,
         "content_type": content_type,
     }
-    try:
-        resp = requests.post(
+    timeout = (30, upload_timeout)
+
+    def _create_upload() -> tuple[str, str]:
+        resp = _notion_request(
+            "POST",
             f"{base_url}/file_uploads",
             headers=_notion_json_headers(token, notion_version),
-            json=create_payload,
-            timeout=(30, upload_timeout),
+            json_body=create_payload,
+            timeout=timeout,
+            operation="POST /file_uploads (single_part) create",
         )
         _notion_raise_for_status("POST /file_uploads (single_part) create", resp)
         info = resp.json()
@@ -159,95 +278,56 @@ def _upload_file_bytes_single_part(
             file_upload_id[:8],
             upload_url.split("/")[2] if upload_url and "/" in upload_url else "?",
         )
-    except Exception as e:
-        log.error("Notion single_part: create failed for %s: %s", file_name, e)
-        raise
+        return file_upload_id, upload_url
 
-    import time as _time
-
-    last_exc: Optional[Exception] = None
-    for send_attempt in range(3):
-        if send_attempt > 0:
-            backoff = 2.0 * send_attempt
+    try:
+        file_upload_id, upload_url = _create_upload()
+        log.debug(
+            "Notion single_part: sending %s bytes timeout=%ss",
+            file_size,
+            upload_timeout,
+        )
+        files = {"file": (file_name, file_bytes, content_type)}
+        resp2 = _notion_request(
+            "POST",
+            upload_url,
+            headers=_notion_send_headers(token, notion_version),
+            files=files,
+            timeout=timeout,
+            operation="file send (single_part)",
+        )
+        if _is_expired_file_upload_403(resp2):
             log.warning(
-                "Notion single_part: retrying send for %s (attempt %s/3) after %.1fs backoff",
+                "Notion single_part: expired upload for %s; re-creating file_upload",
                 file_name,
-                send_attempt + 1,
-                backoff,
             )
-            _time.sleep(backoff)
-            # Re-create the file_upload object — previous one may be tainted after 403
-            try:
-                resp = requests.post(
-                    f"{base_url}/file_uploads",
-                    headers=_notion_json_headers(token, notion_version),
-                    json=create_payload,
-                    timeout=(30, upload_timeout),
-                )
-                _notion_raise_for_status("POST /file_uploads (single_part) re-create", resp)
-                info = resp.json()
-                file_upload_id = info["id"]
-                upload_url = info.get("upload_url") or (
-                    f"{base_url}/file_uploads/{file_upload_id}/send"
-                )
-                log.debug(
-                    "Notion single_part: re-created upload %s... for retry",
-                    file_upload_id[:8],
-                )
-            except Exception as e:
-                log.error("Notion single_part: re-create failed for %s: %s", file_name, e)
-                raise
-
-        try:
-            log.debug(
-                "Notion single_part: sending %s bytes timeout=%ss (attempt %s/3)",
-                file_size,
-                upload_timeout,
-                send_attempt + 1,
-            )
-            files = {"file": (file_name, file_bytes, content_type)}
-            resp2 = requests.post(
+            file_upload_id, upload_url = _create_upload()
+            resp2 = _notion_request(
+                "POST",
                 upload_url,
                 headers=_notion_send_headers(token, notion_version),
                 files=files,
-                timeout=(30, upload_timeout),
+                timeout=timeout,
+                operation="file send (single_part) after re-create",
             )
-            if resp2.status_code == 403 and send_attempt < 2:
-                body = (resp2.text or "")[:2000]
-                log.warning(
-                    "Notion single_part: 403 on send for %s (attempt %s/3): %s",
-                    file_name,
-                    send_attempt + 1,
-                    body,
-                )
-                last_exc = RuntimeError(
-                    f"file send (single_part): HTTP 403 {body}"
-                )
-                continue
-            _notion_raise_for_status("file send (single_part)", resp2)
-            sent = resp2.json() if resp2.content else {}
-            st = sent.get("status")
-            if st and st != "uploaded":
-                log.warning(
-                    "Notion file upload status not 'uploaded' for %s: %r snapshot=%s",
-                    file_name,
-                    st,
-                    {k: sent.get(k) for k in ("id", "status", "filename") if k in sent},
-                )
-            log.debug("Notion single_part: done %s", file_name)
-            return file_upload_id
-        except requests.exceptions.Timeout as e:
-            log.error("Notion single_part: upload timeout for %s: %s", file_name, e)
-            raise Exception(f"File upload timeout for {file_name}") from e
-        except Exception as e:
-            if send_attempt < 2 and "403" in str(e):
-                last_exc = e
-                continue
-            log.error("Notion single_part: send failed for %s: %s", file_name, e)
-            raise
-
-    log.error("Notion single_part: all send attempts exhausted for %s", file_name)
-    raise last_exc or RuntimeError(f"File upload send failed for {file_name}")
+        _notion_raise_for_status("file send (single_part)", resp2)
+        sent = resp2.json() if resp2.content else {}
+        st = sent.get("status")
+        if st and st != "uploaded":
+            log.warning(
+                "Notion file upload status not 'uploaded' for %s: %r snapshot=%s",
+                file_name,
+                st,
+                {k: sent.get(k) for k in ("id", "status", "filename") if k in sent},
+            )
+        log.debug("Notion single_part: done %s", file_name)
+        return file_upload_id
+    except requests.exceptions.Timeout as e:
+        log.error("Notion single_part: upload timeout for %s: %s", file_name, e)
+        raise Exception(f"File upload timeout for {file_name}") from e
+    except Exception as e:
+        log.error("Notion single_part: failed for %s: %s", file_name, e)
+        raise
 
 
 def _upload_file_bytes_multipart(
@@ -275,12 +355,15 @@ def _upload_file_bytes_multipart(
         "filename": file_name,
         "content_type": content_type,
     }
+    timeout = (30, upload_timeout)
     try:
-        resp = requests.post(
+        resp = _notion_request(
+            "POST",
             f"{base_url}/file_uploads",
             headers=_notion_json_headers(token, notion_version),
-            json=create_payload,
-            timeout=(30, upload_timeout),
+            json_body=create_payload,
+            timeout=timeout,
+            operation="POST /file_uploads (multi_part) create",
         )
         _notion_raise_for_status("POST /file_uploads (multi_part) create", resp)
         info = resp.json()
@@ -313,12 +396,14 @@ def _upload_file_bytes_multipart(
                 number_of_parts,
                 len(part_bytes),
             )
-            resp2 = requests.post(
+            resp2 = _notion_request(
+                "POST",
                 upload_url,
                 headers=_notion_send_headers(token, notion_version),
                 files={"file": (file_name, part_bytes, content_type)},
                 data={"part_number": str(part_no)},
-                timeout=(30, upload_timeout),
+                timeout=timeout,
+                operation=f"file send part {part_no}/{number_of_parts} (multi_part)",
             )
             _notion_raise_for_status(
                 f"file send part {part_no}/{number_of_parts} (multi_part)",
@@ -326,11 +411,14 @@ def _upload_file_bytes_multipart(
             )
 
         log.debug("Notion multi_part: completing upload %s...", file_upload_id[:8])
-        resp3 = requests.post(
+        # Complete takes the id in the URL path only; an empty body is required
+        # (Notion rejects a `file_upload_id` body with 400 validation_error).
+        resp3 = _notion_request(
+            "POST",
             complete_url,
             headers=_notion_json_headers(token, notion_version),
-            json={"file_upload_id": file_upload_id},
-            timeout=(30, upload_timeout),
+            timeout=timeout,
+            operation="POST file_uploads/.../complete (multi_part)",
         )
         _notion_raise_for_status("POST file_uploads/.../complete (multi_part)", resp3)
         done = resp3.json() if resp3.content else {}
@@ -349,6 +437,65 @@ def _upload_file_bytes_multipart(
     except Exception as e:
         log.error("Notion multi_part: failed for %s: %s", file_name, e)
         raise
+
+
+def _attachment_display_name_from_zip_base(base_name: str) -> str:
+    low = base_name.lower()
+    if low.endswith(".log"):
+        return base_name[:-4] + ".txt"
+    if low.endswith(".json"):
+        return base_name[:-5] + ".txt"
+    return base_name
+
+
+def _guess_attachment_content_type(name: str) -> str:
+    name_l = name.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".pdf": "application/pdf",
+        ".txt": "text/plain",
+        ".log": "text/plain",
+        ".md": "text/markdown",
+        ".csv": "text/csv",
+        ".json": "application/json",
+    }
+    for ext, ct in content_types.items():
+        if name_l.endswith(ext):
+            return ct
+    return "text/plain"
+
+
+def _relevant_zip_members(file_list: list[zipfile.ZipInfo]) -> list[zipfile.ZipInfo]:
+    return [
+        zi
+        for zi in file_list
+        if not zi.is_dir()
+        and (
+            zi.filename.startswith("attachments/")
+            or zi.filename.startswith("screenshot/")
+            or zi.filename.startswith("logs/")
+            or zi.filename == "collected_data.json"
+            or zi.filename == "issue.json"
+        )
+    ]
+
+
+def list_zip_attach_entries(zip_bytes: bytes) -> list[tuple[str, str, int]]:
+    """Return sorted (zip path, display name, size) tuples for report ZIP members."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+        relevant_files = _relevant_zip_members(zf.infolist())
+        relevant_files.sort(key=lambda zi: zi.file_size)
+        return [
+            (
+                zi.filename,
+                _attachment_display_name_from_zip_base(zi.filename.split("/")[-1]),
+                zi.file_size,
+            )
+            for zi in relevant_files
+        ]
 
 
 class NotionService:
@@ -1985,97 +2132,77 @@ class NotionService:
 
         return blocks
 
-    def _attach_zip_to_page(self, attachments_zip_b64: str, page_id: str):
-        """
-        Extract and upload files from ZIP to Notion page.
-        Process files one by one to avoid memory issues with large attachments.
-        """
-        log.debug(f"Starting attachment upload for page {page_id[:8]}...")
-
+    def _attach_zip_to_page(self, attachments_zip_b64: str, page_id: str) -> dict[str, Any]:
+        """Decode base64 ZIP and run the server-side upload+attach pass."""
         try:
             raw = base64.b64decode(attachments_zip_b64)
-            log.debug(f"Decoded ZIP size: {len(raw)} bytes")
         except Exception as e:
-            log.error(f"Failed to decode ZIP data: {e}")
-            return
+            log.error("Failed to decode ZIP data: %s", e)
+            return {
+                "success": False,
+                "attachments_uploaded": 0,
+                "attachments_failed": 0,
+                "attachment_failures": [f"ZIP decode: {e}"],
+            }
+        return self.attach_zip_bytes_to_page(raw, page_id)
+
+    def attach_zip_bytes_to_page(
+        self,
+        zip_bytes: bytes,
+        page_id: str,
+        *,
+        append_failure_note: bool = True,
+    ) -> dict[str, Any]:
+        """Upload every report-ZIP member to Notion and attach them in one PATCH.
+
+        Fully self-contained and stateless: enumerate members, upload each via
+        the Notion File Upload API (single- or multi-part), then PATCH the page's
+        Attachments property in one request. Upload failures are collected and
+        appended to the page as a note. Returns counts and human-readable
+        failure lines for the client.
+        """
+        log.debug(
+            "Starting server-side attachment pass for page %s... (%s byte ZIP)",
+            page_id[:8],
+            len(zip_bytes),
+        )
+        try:
+            entries = list_zip_attach_entries(zip_bytes)
+        except zipfile.BadZipFile as e:
+            return {
+                "success": False,
+                "attachments_uploaded": 0,
+                "attachments_failed": 1,
+                "attachment_failures": [f"Invalid ZIP: {e}"],
+            }
+
+        log.debug(
+            "Found %s files to upload from %s byte ZIP",
+            len(entries),
+            len(zip_bytes),
+        )
+        uploaded_files: list[dict[str, Any]] = []
+        failure_lines: list[str] = []
 
         try:
-            with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
-                uploaded_files: list[dict[str, Any]] = []
-                file_list = zf.infolist()
-
-                # Filter files to only include meaningful attachments
-                relevant_files = [
-                    zi
-                    for zi in file_list
-                    if not zi.is_dir()
-                    and (
-                        zi.filename.startswith("attachments/")
-                        or zi.filename.startswith("screenshot/")
-                        or zi.filename.startswith("logs/")
-                        or zi.filename == "collected_data.json"
-                        or zi.filename == "issue.json"
-                    )
-                ]
-
-                log.debug(
-                    f"Found {len(relevant_files)} files to upload (out of {len(file_list)} total)"
-                )
-
-                def guess_content_type(name: str) -> str:
-                    name_l = name.lower()
-                    content_types = {
-                        ".png": "image/png",
-                        ".jpg": "image/jpeg",
-                        ".jpeg": "image/jpeg",
-                        ".gif": "image/gif",
-                        ".pdf": "application/pdf",
-                        ".txt": "text/plain",
-                        ".log": "text/plain",
-                        ".md": "text/markdown",
-                        ".csv": "text/csv",
-                        ".json": "application/json",
-                    }
-                    for ext, ct in content_types.items():
-                        if name_l.endswith(ext):
-                            return ct
-                    return "text/plain"
-
-                # Process files one by one
-                for i, zi in enumerate(relevant_files):
+            with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+                for idx, (zip_path, display_name, file_size) in enumerate(
+                    entries, start=1
+                ):
                     try:
                         log.debug(
-                            f"Processing file {i + 1}/{len(relevant_files)}: {zi.filename}"
+                            "Processing file %s/%s: %s", idx, len(entries), zip_path
                         )
-
-                        # Check file size (Notion has limits)
-                        if zi.file_size > 100 * 1024 * 1024:  # 100MB limit
-                            log.warning(
-                                f"Skipping large file {zi.filename} ({zi.file_size} bytes)"
+                        if file_size > ATTACHMENT_MAX_BYTES:
+                            failure_lines.append(
+                                f"{display_name}: skipped (exceeds 100MB server limit)"
                             )
                             continue
-
-                        file_bytes = zf.read(zi)
-                        base_name = zi.filename.split("/")[-1]
-
-                        # Rename .log / .json to .txt for Notion (avoid JSON MIME 403s)
-                        low = base_name.lower()
-                        if low.endswith(".log"):
-                            display_name = base_name[:-4] + ".txt"
-                        elif low.endswith(".json"):
-                            display_name = base_name[:-5] + ".txt"
-                        else:
-                            display_name = base_name
-
-                        content_type = guess_content_type(display_name)
-
-                        log.debug(
-                            f"Uploading {display_name} ({len(file_bytes)} bytes, {content_type})"
-                        )
+                        file_bytes = zf.read(zip_path)
+                        content_type = _guess_attachment_content_type(display_name)
                         file_id = self._upload_file_bytes(
                             display_name, content_type, file_bytes
                         )
-
                         uploaded_files.append(
                             {
                                 "type": "file_upload",
@@ -2083,32 +2210,44 @@ class NotionService:
                                 "name": display_name,
                             }
                         )
-
-                        log.debug(
-                            f"Successfully uploaded {display_name} with ID: {file_id[:8]}..."
-                        )
-
                     except Exception as e:
-                        log.warning(f"Failed to upload {zi.filename}: {e}")
-                        continue
-
-                # Update page with all uploaded files at once
-                if uploaded_files:
-                    log.debug(
-                        f"Updating page with {len(uploaded_files)} uploaded files..."
-                    )
-                    self._update_page_attachments(page_id, uploaded_files)
-                    log.debug("Successfully updated page with attachments")
-                else:
-                    log.warning("No files were successfully uploaded")
-
+                        log.warning("Failed to upload %s: %s", zip_path, e)
+                        failure_lines.append(f"{display_name}: {e}")
         except zipfile.BadZipFile as e:
-            log.error(f"Invalid ZIP file: {e}")
-        except Exception as e:
-            log.error(f"Error processing ZIP file: {e}")
-            import traceback
+            return {
+                "success": False,
+                "attachments_uploaded": 0,
+                "attachments_failed": 1,
+                "attachment_failures": [f"Invalid ZIP: {e}"],
+            }
 
-            log.error(f"Traceback: {traceback.format_exc()}")
+        attached_count = 0
+        if uploaded_files:
+            try:
+                self._set_page_attachments(page_id, uploaded_files)
+                attached_count = len(uploaded_files)
+            except Exception as e:
+                log.error("Failed to PATCH page attachments: %s", e)
+                failure_lines.append(f"Finalize attachments on page: {e}")
+
+        if failure_lines and append_failure_note:
+            try:
+                self._append_upload_failures_to_page(
+                    page_id,
+                    failure_lines,
+                    SHARED_FOLDER_ARCHIVE_HINT,
+                )
+            except Exception as e:
+                log.warning("Failed to append upload failure note: %s", e)
+
+        return {
+            "success": not failure_lines,
+            "total_files": len(entries),
+            "processed_files": len(entries),
+            "attachments_uploaded": attached_count,
+            "attachments_failed": len(failure_lines),
+            "attachment_failures": list(failure_lines),
+        }
 
     def _upload_file_bytes(
         self, file_name: str, content_type: str, file_bytes: bytes
@@ -2158,85 +2297,122 @@ class NotionService:
         except Exception as e:
             log.error(f"Failed to add file block for {filename}: {e}")
 
-    def _update_page_attachments(
+    def _set_page_attachments(
         self, page_id: str, uploaded_files: list[dict[str, Any]]
-    ):
-        """Update page with attachment files by appending to existing attachments."""
+    ) -> None:
+        """PATCH Attachments on a fresh page (no read-back of existing files)."""
+        if not uploaded_files:
+            return
         log.debug(
-            f"Updating page {page_id[:8]}... with {len(uploaded_files)} new attachments"
+            "Setting page %s... Attachments count=%s",
+            page_id[:8],
+            len(uploaded_files),
         )
-
         try:
-            # Get existing attachments
-            existing_files = self._get_existing_attachments(page_id)
-            log.debug(f"Found {len(existing_files)} existing attachments")
-
-            # Combine existing files with new files
-            all_files = existing_files + uploaded_files
-            log.debug(f"Total files after adding new ones: {len(all_files)}")
-
+            self._patch_page_attachments_files(page_id, uploaded_files)
+            return
         except Exception as e:
+            if len(uploaded_files) <= NOTION_ATTACHMENTS_PATCH_BATCH:
+                raise
             log.warning(
-                f"Failed to get existing attachments, using only new files: {e}"
+                "Single PATCH failed for %s files (%s); batching cumulatively",
+                len(uploaded_files),
+                e,
             )
-            all_files = uploaded_files
+        accumulated: list[dict[str, Any]] = []
+        for off in range(0, len(uploaded_files), NOTION_ATTACHMENTS_PATCH_BATCH):
+            accumulated.extend(
+                uploaded_files[off : off + NOTION_ATTACHMENTS_PATCH_BATCH]
+            )
+            self._patch_page_attachments_files(page_id, accumulated)
 
-        # PATCH page: files value is just "files" array (see property-value-object).
+    def _patch_page_attachments_files(
+        self, page_id: str, files: list[dict[str, Any]]
+    ) -> None:
         payload = {
             "properties": {
-                "Attachments": {"files": all_files},
+                "Attachments": {
+                    "type": "files",
+                    "files": files,
+                },
             }
         }
-        log.debug(
-            "Notion PATCH /pages attachments: count=%s sample_keys=%s",
-            len(all_files),
-            list(all_files[0].keys()) if all_files else [],
+        resp = _notion_request(
+            "PATCH",
+            f"{self.base_url}/pages/{page_id}",
+            headers=self._headers(),
+            json_body=payload,
+            timeout=(30, 600),
+            operation=f"PATCH page attachments count={len(files)}",
         )
+        if resp.status_code >= 400:
+            log.error(
+                "Notion PATCH attachments failed: status=%s body=%s",
+                resp.status_code,
+                resp.text[:2000],
+            )
+        resp.raise_for_status()
 
-        try:
-            resp = requests.patch(
-                f"{self.base_url}/pages/{page_id}",
+    def _append_upload_failures_to_page(
+        self,
+        page_id: str,
+        failures: list[str],
+        archive_note: Optional[str] = None,
+    ) -> None:
+        lines = [str(x).strip() for x in failures if str(x).strip()]
+        if not lines and not (archive_note or "").strip():
+            return
+
+        def _paragraph_block(text: str) -> dict[str, Any]:
+            t = text[:1990]
+            return {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": t}}],
+                },
+            }
+
+        def _text_chunks(s: str, max_len: int = 1990) -> list[str]:
+            out: list[str] = []
+            i = 0
+            while i < len(s):
+                out.append(s[i : i + max_len])
+                i += max_len
+            return out
+
+        children: list[dict[str, Any]] = [
+            _paragraph_block("Some attachments could not be uploaded to Notion:")
+        ]
+        for ln in lines:
+            for piece in _text_chunks(f"• {ln}"):
+                children.append(_paragraph_block(piece))
+        if (archive_note or "").strip():
+            for piece in _text_chunks(str(archive_note).strip()):
+                children.append(_paragraph_block(piece))
+
+        url = f"{self.base_url}/blocks/{page_id}/children"
+        max_per_req = 100
+        for off in range(0, len(children), max_per_req):
+            batch = children[off : off + max_per_req]
+            resp = _notion_request(
+                "PATCH",
+                url,
                 headers=self._headers(),
-                json=payload,
-                timeout=(30, 600),
+                json_body={
+                    "position": {"type": "end"},
+                    "children": batch,
+                },
+                timeout=(30, 120),
+                operation="append upload failure note",
             )
             if resp.status_code >= 400:
                 log.error(
-                    "Notion PATCH attachments failed: status=%s body=%s",
+                    "append_upload_failures: status=%s body=%s",
                     resp.status_code,
                     resp.text[:2000],
                 )
-            resp.raise_for_status()
-            log.debug(
-                f"Successfully updated page with {len(all_files)} total attachments"
-            )
-
-        except Exception as e:
-            log.error(f"Failed to update page attachments: {e}")
-            raise
-
-    def _get_existing_attachments(self, page_id: str) -> list[dict[str, Any]]:
-        """Get existing attachments from a page."""
-        try:
-            headers = self._headers()
-            response = requests.get(
-                f"{self.base_url}/pages/{page_id}/properties/Attachments",
-                headers=headers,
-                timeout=(30, 120),
-            )
-            if response.status_code == 200:
-                data = response.json()
-                files = data.get("files", [])
-                log.debug(f"Retrieved {len(files)} existing attachments")
-                return files
-            else:
-                log.warning(
-                    f"Failed to get existing attachments: {response.status_code}"
-                )
-                return []
-        except Exception as e:
-            log.warning(f"Failed to get existing attachments: {e}")
-            return []
+                resp.raise_for_status()
 
     def _safe_attach_wrapper(self, attachments_zip_b64: str, page_id: str) -> None:
         """

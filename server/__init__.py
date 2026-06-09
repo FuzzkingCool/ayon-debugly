@@ -28,8 +28,7 @@ except Exception as e:
 # Add error handling for imports
 try:
     from . import issue_reports
-    from . import notion_upload_sessions as upload_sessions
-    from .notion_service import NotionService, upload_file_bytes_to_notion
+    from .notion_service import NotionService
     from .settings import DEFAULT_DEBUGLY_SETTINGS, DebuglySettings
 
     # log.info("Debugly server modules imported successfully")
@@ -140,51 +139,39 @@ class NotionSubmitRequest(OPModel):
         return _coerce_notion_submit_camel_case(values)
 
 
-class NotionUploadAttachmentRequest(OPModel):
-    page_id: str = Field("", title="Page ID")
-    filename: str = Field("", title="Filename")
-    file_b64: str = Field("", title="File content (base64)")
-    file_size: int = Field(0, title="File size in bytes")
-
-
-class NotionUploadBeginRequest(OPModel):
-    page_id: str = Field("", title="Page ID")
-    filename: str = Field("", title="Filename for Notion upload")
-    file_size: int = Field(0, title="Total file size in bytes")
-    total_chunks: int = Field(0, title="Number of chunks client will send")
-
-
-class NotionUploadChunkRequest(OPModel):
-    upload_id: str = Field("", title="Session id from upload_begin")
-    chunk_index: int = Field(0, title="0-based chunk index")
-    chunk_b64: str = Field("", title="Base64 of this chunk's raw bytes")
-
-
-class NotionUploadCompleteRequest(OPModel):
-    upload_id: str = Field("", title="Session id from upload_begin")
-
-
-class NotionAppendFailuresRequest(OPModel):
-    page_id: str = Field("", title="Notion page id")
-    failures: list[str] = Field(
-        default_factory=list,
-        title="Lines describing failed uploads (filename + reason)",
+class NotionAttachBundleRequest(OPModel):
+    page_id: str = Field("", title="Notion page ID from notion/submit")
+    attachments_zip_b64: str = Field(
+        "",
+        title="Attachments ZIP (base64)",
+        description="Base64-encoded report ZIP produced by DebuglyIssue.to_zip()",
     )
-    archive_note: Optional[str] = Field(
-        None,
-        title="Optional note e.g. shared-folder ZIP filename",
+    database_id: Optional[str] = Field(
+        None, title="Database ID override (same as notion/submit)"
     )
 
+    @root_validator(pre=True)
+    def _normalize_aliases(cls, values: Any) -> Any:
+        # ayon-backend uses Pydantic v1; tolerate camelCase from gateways/clients.
+        if not isinstance(values, dict):
+            return values
+        out = dict(values)
+        for snake, camel in (
+            ("page_id", "pageId"),
+            ("attachments_zip_b64", "attachmentsZipB64"),
+            ("database_id", "databaseId"),
+        ):
+            if out.get(snake) is None and camel in out:
+                out[snake] = out[camel]
+        return out
 
-def _guess_notion_upload_content_type(filename: str) -> str:
-    """MIME for Notion file upload; .txt and redacted logs are always text/plain."""
-    import mimetypes
 
-    fn = (filename or "").strip().lower()
-    if fn.endswith(".txt"):
-        return "text/plain"
-    ct, _ = mimetypes.guess_type(filename or "")
-    return ct or "application/octet-stream"
+class NotionAppendNoteRequest(OPModel):
+    page_id: str = Field("", title="Notion page ID")
+    message: str = Field("", title="Failure or status note to append on the page")
+    database_id: Optional[str] = Field(
+        None, title="Database ID override (same as notion/submit)"
+    )
 
 
 class Debugly(BaseServerAddon):
@@ -204,40 +191,20 @@ class Debugly(BaseServerAddon):
             self.add_endpoint(
                 "/notion/connectivity", self.notion_connectivity_test, method="GET"
             )
+            self.add_endpoint(
+                "/notion/capabilities",
+                self.notion_capabilities,
+                method="GET",
+            )
             self.add_endpoint("/notion/submit", self.notion_submit, method="POST")
             self.add_endpoint(
-                "/notion/upload_attachment",
-                self.notion_upload_attachment,
+                "/notion/attach_bundle",
+                self.notion_attach_bundle,
                 method="POST",
             )
             self.add_endpoint(
-                "/notion/upload_attachments",
-                self.notion_upload_attachments,
-                method="POST",
-            )
-            self.add_endpoint(
-                "/notion/finalize_attachments",
-                self.notion_finalize_attachments,
-                method="POST",
-            )
-            self.add_endpoint(
-                "/notion/upload_begin",
-                self.notion_upload_begin,
-                method="POST",
-            )
-            self.add_endpoint(
-                "/notion/upload_chunk",
-                self.notion_upload_chunk,
-                method="POST",
-            )
-            self.add_endpoint(
-                "/notion/upload_complete",
-                self.notion_upload_complete,
-                method="POST",
-            )
-            self.add_endpoint(
-                "/notion/append_upload_failures",
-                self.notion_append_upload_failures,
+                "/notion/append_note",
+                self.notion_append_note,
                 method="POST",
             )
             self.add_endpoint("/issues", self.debugly_list_issues, method="GET")
@@ -462,48 +429,28 @@ class Debugly(BaseServerAddon):
                 f"Debugly Notion: Settings loaded, notion config keys: {list(notion_cfg.__dict__.keys())}"
             )
 
-            # Resolve Notion token from secret store
-            secret_name = notion_cfg.api_key
-            log.debug(f"Debugly Notion: Looking for secret: '{secret_name}'")
-            token = await Secrets.get(secret_name)
-            if not token:
-                log.error(f"Debugly Notion: Secret '{secret_name}' not found or empty")
-                return {
-                    "error": "Notion API key secret is not set or not accessible on server"
-                }
-            log.debug(f"Debugly Notion: Secret retrieved, token length: {len(token)}")
-
-            # Prefer request database_id if provided, else settings
             req_dbid = (
                 (payload.database_id or "").strip()
                 if hasattr(payload, "database_id")
                 else ""
             )
-            cfg_dbid = (notion_cfg.database_id or "").strip()
-            raw_db = (req_dbid or cfg_dbid).strip()
-            database_id, ds_hint = _parse_notion_database_and_data_source_hint(
-                raw_db
-            )
             log.debug(
-                f"Debugly Notion: req_dbid='{req_dbid}', cfg_dbid set={bool(cfg_dbid)}"
-            )
-            log.debug(
-                f"Debugly Notion: normalized database_id='{database_id}' "
-                f"data_source_hint={ds_hint[:8] + '...' if ds_hint else None}"
-            )
-            if not database_id:
-                log.error("Debugly Notion: No database ID provided")
-                return {"error": "Notion database ID is required in settings"}
-
-            log.debug(
-                f"Debugly Notion: Creating NotionService with database_id: {database_id[:8]}..."
+                "Debugly Notion: req_dbid set=%s cfg_dbid set=%s",
+                bool(req_dbid),
+                bool((notion_cfg.database_id or "").strip()),
             )
             try:
-                service = NotionService(
-                    token=token,
-                    database_id=database_id,
-                    data_source_id_hint=ds_hint,
+                service, err = await self._notion_service_from_settings(
+                    settings,
+                    database_id_override=req_dbid or None,
                 )
+                if service is None:
+                    log.error("Debugly Notion: %s", err)
+                    if err == "Notion API token not configured":
+                        return {
+                            "error": "Notion API key secret is not set or not accessible on server"
+                        }
+                    return {"error": err or "Notion database ID is required in settings"}
                 log.debug("Debugly Notion: NotionService created successfully")
             except Exception as e:
                 log.error(f"Debugly Notion: Failed to create NotionService: {e}")
@@ -534,7 +481,7 @@ class Debugly(BaseServerAddon):
                 f"{'set' if assignee_id else 'empty'}"
             )
 
-            # Create page without attachments - client will upload them individually
+            # Create page without attachments - client transfers ZIP via bundle_* routes
             log.debug("Debugly Notion: Creating page without attachments...")
             log.info(
                 "Debugly Notion: calling NotionService.submit_issue with "
@@ -609,533 +556,128 @@ class Debugly(BaseServerAddon):
             log.error(f"Debugly Notion: Traceback: {traceback.format_exc()}")
             return {"error": f"Unexpected error: {str(e)}"}
 
-    async def notion_upload_attachment(self, payload: NotionUploadAttachmentRequest):
-        """Upload a single attachment to an existing Notion page.
+    async def notion_capabilities(self):
+        """Report server-side Notion upload features for client pre-flight checks."""
+        return {
+            "success": True,
+            "attach_bundle": True,
+            "notion_api_version": NOTION_API_VERSION,
+        }
 
-        This endpoint handles individual file uploads to avoid timeouts.
-        The page must already exist (created via notion_submit).
-
-        For file uploads, we don't actually need the full NotionService since we're just
-        uploading files directly to Notion's file upload API - no database operations needed.
-
-        Args:
-            payload: Contains page_id, filename, file_b64, and file_size
-
-        Returns:
-            dict: Success status and any error messages
-        """
-        log.debug(
-            f"Debugly Notion: Starting attachment upload for page {payload.page_id[:8]}..."
-        )
-        log.debug(
-            f"Debugly Notion: Filename: {payload.filename}, Size: {payload.file_size} bytes"
-        )
-
-        try:
-            # Get settings and API token
-            settings = await self.get_studio_settings()
-            notion_settings = settings.endpoints.notion.notion
-
-            # Get token from server secrets
-            secret_name = notion_settings.api_key
-            log.debug(f"Debugly Notion: Looking for secret: '{secret_name}'")
-            token = await Secrets.get(secret_name)
-            if not token:
-                log.error(f"Debugly Notion: Secret '{secret_name}' not found or empty")
-                return {"success": False, "error": "Notion API token not configured"}
-            log.debug(f"Debugly Notion: Secret retrieved, token length: {len(token)}")
-
-            # For file uploads, we don't need NotionService - we can upload directly to Notion's API
-            # This avoids the database_id requirement issue entirely
-
-            # Decode the file
-            import base64
-
-            try:
-                file_bytes = base64.b64decode(payload.file_b64)
-            except Exception as e:
-                log.error(
-                    f"Debugly Notion: Failed to decode file {payload.filename}: {e}"
-                )
-                return {"success": False, "error": f"Failed to decode file: {e}"}
-
-            content_type = _guess_notion_upload_content_type(payload.filename)
-
-            # Upload the file directly using Notion's file upload API (2-step process)
-            log.debug(f"Debugly Notion: Uploading {payload.filename} to Notion...")
-            file_id = await self._upload_file_bytes_direct(
-                token, payload.filename, content_type, file_bytes
-            )
-
-            # Just return the file ID - the client will handle batching all files together
-            log.debug(
-                f"Debugly Notion: Successfully uploaded {payload.filename} with ID: {file_id[:8]}..."
-            )
-            return {"success": True, "file_id": file_id, "filename": payload.filename}
-
-        except Exception as e:
-            log.error(f"Debugly Notion: Attachment upload failed: {e}")
-            import traceback
-
-            log.error(f"Debugly Notion: Upload traceback: {traceback.format_exc()}")
-            detail = str(e).strip()
-            if len(detail) > 2500:
-                detail = detail[:2500] + "…"
-            return {
-                "success": False,
-                "error": f"Attachment upload failed: {e}",
-                "notion_detail": detail,
-            }
-
-    async def _upload_file_bytes_direct(
-        self, token: str, filename: str, content_type: str, file_bytes: bytes
-    ) -> str:
-        """
-        Upload file bytes directly to Notion (same logic as NotionService).
-
-        Uses shared upload_file_bytes_to_notion (single_part or multi_part + complete).
-        """
-        log.debug(
-            "Debugly Notion: direct upload %s (%s bytes)",
-            filename,
-            len(file_bytes),
-        )
-        import requests
-
-        last_err: Optional[Exception] = None
-        for attempt in range(2):
-            try:
-                return upload_file_bytes_to_notion(
-                    token=token,
-                    notion_version=NOTION_API_VERSION,
-                    file_name=filename,
-                    content_type=content_type,
-                    file_bytes=file_bytes,
-                    base_url="https://api.notion.com/v1",
-                    upload_timeout=600,
-                )
-            except requests.exceptions.Timeout as e:
-                last_err = e
-                log.warning(
-                    "Debugly Notion: upload timeout (attempt %s/2) for %s: %s",
-                    attempt + 1,
-                    filename,
-                    e,
-                )
-            except Exception as e:
-                raise
-        if last_err:
-            raise last_err
-        raise RuntimeError("upload_file_bytes_to_notion: no result")
-
-    async def notion_upload_begin(self, payload: NotionUploadBeginRequest):
-        """Start a chunked attachment upload session."""
-        if not (payload.page_id or "").strip():
+    async def notion_append_note(self, payload: NotionAppendNoteRequest):
+        """Append a failure/status paragraph to an existing Notion page."""
+        page_id = (payload.page_id or "").strip()
+        message = (payload.message or "").strip()
+        if not page_id:
             return {"success": False, "error": "page_id is required"}
-        if not (payload.filename or "").strip():
-            return {"success": False, "error": "filename is required"}
-        out = upload_sessions.begin(
-            page_id=payload.page_id.strip(),
-            filename=payload.filename.strip(),
-            file_size=int(payload.file_size),
-            total_chunks=int(payload.total_chunks),
+        if not message:
+            return {"success": False, "error": "message is required"}
+        try:
+            service, err = await self._notion_service_for_uploads(
+                database_id_override=(payload.database_id or "").strip() or None
+            )
+            if service is None:
+                return {"success": False, "error": err or "Notion not configured"}
+
+            def _run() -> None:
+                from .notion_service import SHARED_FOLDER_ARCHIVE_HINT
+
+                service._append_upload_failures_to_page(
+                    page_id,
+                    [message],
+                    SHARED_FOLDER_ARCHIVE_HINT,
+                )
+
+            await asyncio.to_thread(_run)
+            return {"success": True}
+        except Exception as e:
+            log.error("Debugly Notion: append_note failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    async def _notion_service_from_settings(
+        self,
+        settings: BaseSettingsModel,
+        *,
+        database_id_override: Optional[str] = None,
+    ) -> tuple[Optional[NotionService], Optional[str]]:
+        """Build NotionService from studio settings with optional database_id override."""
+        notion_settings = settings.endpoints.notion.notion
+        secret_name = notion_settings.api_key
+        token = await Secrets.get(secret_name)
+        if not token:
+            return None, "Notion API token not configured"
+        req_dbid = (database_id_override or "").strip()
+        cfg_dbid = (notion_settings.database_id or "").strip()
+        raw_db = (req_dbid or cfg_dbid).strip()
+        database_id, ds_hint = _parse_notion_database_and_data_source_hint(raw_db)
+        if not database_id:
+            return None, "Notion database ID is not configured"
+        service = NotionService(
+            token=token,
+            database_id=database_id,
+            data_source_id_hint=ds_hint,
         )
-        if out.get("success"):
-            return out
-        return {
-            "success": False,
-            "error": out.get("error") or "upload_begin rejected",
-        }
+        return service, None
 
-    async def notion_upload_chunk(self, payload: NotionUploadChunkRequest):
-        """Receive one base64 chunk for a session."""
+    async def _notion_service_for_uploads(
+        self,
+        *,
+        database_id_override: Optional[str] = None,
+    ) -> tuple[Optional[NotionService], Optional[str]]:
+        """Build NotionService for server-side ZIP upload pass (token + database)."""
+        settings = await self.get_studio_settings()
+        return await self._notion_service_from_settings(
+            settings,
+            database_id_override=database_id_override,
+        )
+
+    async def notion_attach_bundle(self, payload: NotionAttachBundleRequest):
+        """Upload a report ZIP to Notion and attach its members in one request.
+
+        Stateless: the client sends the whole ZIP once; the server decodes it,
+        uploads each member via the Notion File Upload API (single- or
+        multi-part), and PATCHes the page's Attachments property. No transfer
+        session persists between requests, so this is safe across multi-worker /
+        multi-replica backends.
+        """
         import base64
-
-        uid = (payload.upload_id or "").strip()
-        if not uid:
-            return {"success": False, "error": "upload_id is required"}
-        try:
-            raw = base64.b64decode(payload.chunk_b64 or "", validate=False)
-        except Exception as e:
-            return {"success": False, "error": f"invalid chunk_b64: {e}"}
-        out = upload_sessions.add_chunk(uid, int(payload.chunk_index), raw)
-        if out.get("success"):
-            return out
-        return {
-            "success": False,
-            "error": out.get("error") or "upload_chunk failed",
-        }
-
-    async def notion_upload_complete(self, payload: NotionUploadCompleteRequest):
-        """Assemble chunks, upload to Notion, return file_id."""
-        uid = (payload.upload_id or "").strip()
-        if not uid:
-            return {"success": False, "error": "upload_id is required"}
-        done = upload_sessions.complete(uid)
-        if not done.get("success"):
-            err = done.get("error") or "upload_complete session failed"
-            return {"success": False, "error": err}
-        file_bytes = done.pop("file_bytes", None)
-        if not isinstance(file_bytes, (bytes, bytearray)):
-            return {"success": False, "error": "internal: missing assembled bytes"}
-        page_id = str(done.get("page_id") or "")
-        filename = str(done.get("filename") or "")
-        try:
-            settings = await self.get_studio_settings()
-            notion_settings = settings.endpoints.notion.notion
-            secret_name = notion_settings.api_key
-            token = await Secrets.get(secret_name)
-            if not token:
-                return {"success": False, "error": "Notion API token not configured"}
-            content_type = _guess_notion_upload_content_type(filename)
-            log.debug(
-                "Debugly Notion: chunked complete upload %s (%s bytes) page=%s...",
-                filename,
-                len(file_bytes),
-                page_id[:8],
-            )
-            file_id = await self._upload_file_bytes_direct(
-                token, filename, content_type, bytes(file_bytes)
-            )
-            return {"success": True, "file_id": file_id, "filename": filename}
-        except Exception as e:
-            log.error("Debugly Notion: upload_complete failed: %s", e)
-            return {"success": False, "error": f"Attachment upload failed: {e}"}
-
-    async def notion_append_upload_failures(self, payload: NotionAppendFailuresRequest):
-        """Append paragraph blocks to the page listing failed Notion file uploads."""
-        import requests
 
         page_id = (payload.page_id or "").strip()
         if not page_id:
             return {"success": False, "error": "page_id is required"}
-        lines = [str(x).strip() for x in (payload.failures or []) if str(x).strip()]
-        if not lines and not (payload.archive_note or "").strip():
-            return {"success": True, "appended": 0}
+        b64 = (payload.attachments_zip_b64 or "").strip()
+        if not b64:
+            return {"success": False, "error": "attachments_zip_b64 is required"}
         try:
-            settings = await self.get_studio_settings()
-            notion_settings = settings.endpoints.notion.notion
-            token = await Secrets.get(notion_settings.api_key)
-            if not token:
-                return {"success": False, "error": "Notion API token not configured"}
+            zip_bytes = base64.b64decode(b64, validate=False)
         except Exception as e:
-            return {"success": False, "error": str(e)}
-
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Notion-Version": NOTION_API_VERSION,
-        }
-
-        def _paragraph_block(text: str) -> dict[str, Any]:
-            # Notion rich_text text content limit 2000 chars per text object
-            t = text[:1990]
-            return {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {"type": "text", "text": {"content": t}},
-                    ]
-                },
-            }
-
-        def _text_chunks(s: str, max_len: int = 1990) -> list[str]:
-            s = s or ""
-            out: list[str] = []
-            i = 0
-            while i < len(s):
-                out.append(s[i : i + max_len])
-                i += max_len
-            return out
-
-        children: list[dict[str, Any]] = []
-        children.append(_paragraph_block("Some attachments could not be uploaded to Notion:"))
-        for ln in lines:
-            for piece in _text_chunks(f"• {ln}"):
-                children.append(_paragraph_block(piece))
-        if (payload.archive_note or "").strip():
-            for piece in _text_chunks(str(payload.archive_note).strip()):
-                children.append(_paragraph_block(piece))
-
-        url = f"https://api.notion.com/v1/blocks/{page_id}/children"
-        max_per_req = 100  # Notion append limit
-        appended = 0
-        try:
-            for off in range(0, len(children), max_per_req):
-                batch = children[off : off + max_per_req]
-                resp = requests.patch(
-                    url,
-                    headers=headers,
-                    json={
-                        "position": {"type": "end"},
-                        "children": batch,
-                    },
-                    timeout=(30, 120),
-                )
-                if resp.status_code >= 400:
-                    log.error(
-                        "append_upload_failures: status=%s body=%s",
-                        resp.status_code,
-                        resp.text[:2000],
-                    )
-                    return {
-                        "success": False,
-                        "error": f"Notion API {resp.status_code}: {resp.text[:500]}",
-                    }
-                appended += len(batch)
-            return {"success": True, "appended": appended}
-        except Exception as e:
-            log.error("append_upload_failures: %s", e)
-            return {"success": False, "error": str(e)}
-
-    async def notion_upload_attachments(self, payload: dict):
-        """Upload multiple attachments to a Notion page in one batch."""
-        log.debug(
-            f"Debugly Notion: Starting batch attachment upload for page {payload.get('page_id', 'unknown')[:8]}..."
-        )
+            return {"success": False, "error": f"invalid attachments_zip_b64: {e}"}
+        if not zip_bytes:
+            return {"success": False, "error": "attachments_zip_b64 decoded to empty"}
 
         try:
-            # Get settings and API token
-            settings = await self.get_studio_settings()
-            notion_settings = settings.endpoints.notion.notion
-
-            # Get token from server secrets
-            secret_name = notion_settings.api_key
-            log.debug(f"Debugly Notion: Looking for secret: '{secret_name}'")
-            token = await Secrets.get(secret_name)
-            if not token:
-                log.error(f"Debugly Notion: Secret '{secret_name}' not found or empty")
-                return {"error": "Notion API token not configured"}
-            log.debug(f"Debugly Notion: Secret retrieved, token length: {len(token)}")
-
-            raw_db = (notion_settings.database_id or "").strip()
-            database_id, ds_hint = _parse_notion_database_and_data_source_hint(
-                raw_db
+            service, err = await self._notion_service_for_uploads(
+                database_id_override=(payload.database_id or "").strip() or None
             )
-            if not database_id:
-                log.error("Debugly Notion: No database ID for attachment upload")
-                return {"error": "Notion database ID is not configured"}
+            if service is None:
+                return {"success": False, "error": err or "Notion not configured"}
 
-            service = NotionService(
-                token=token,
-                database_id=database_id,
-                data_source_id_hint=ds_hint,
+            def _run() -> dict[str, Any]:
+                return service.attach_zip_bytes_to_page(zip_bytes, page_id)
+
+            result = await asyncio.to_thread(_run)
+            if not isinstance(result, dict):
+                return {"success": False, "error": "internal: invalid attach result"}
+            log.info(
+                "Debugly Notion: attach_bundle page=%s... uploaded=%s failed=%s",
+                page_id[:8],
+                result.get("attachments_uploaded"),
+                result.get("attachments_failed"),
             )
-
-            page_id = payload.get("page_id")
-            if not page_id:
-                return {"error": "Page ID is required"}
-
-            # Process all files
-            uploaded_files = []
-            files_data = payload.get("files", [])
-
-            for file_data in files_data:
-                try:
-                    filename = file_data.get("filename")
-                    file_b64 = file_data.get("file_b64")
-
-                    if not filename or not file_b64:
-                        log.warning(f"Skipping file with missing data: {filename}")
-                        continue
-
-                    # Decode the file
-                    import base64
-
-                    file_bytes = base64.b64decode(file_b64)
-
-                    content_type = _guess_notion_upload_content_type(filename)
-
-                    # Upload the file
-                    log.debug(f"Debugly Notion: Uploading {filename} to Notion...")
-                    file_id = service._upload_file_bytes(
-                        filename, content_type, file_bytes
-                    )
-
-                    # Add to uploaded files list
-                    uploaded_files.append(
-                        {
-                            "type": "file_upload",
-                            "file_upload": {"id": file_id},
-                            "name": filename,
-                        }
-                    )
-
-                    log.debug(f"Debugly Notion: Successfully uploaded {filename}")
-
-                except Exception as e:
-                    log.warning(
-                        f"Failed to upload {file_data.get('filename', 'unknown')}: {e}"
-                    )
-                    continue
-
-            # Update the page with all uploaded files at once
-            if uploaded_files:
-                log.debug(
-                    f"Debugly Notion: Updating page with {len(uploaded_files)} attachments..."
-                )
-                service._update_page_attachments(page_id, uploaded_files)
-                log.debug(
-                    "Debugly Notion: Successfully updated page with all attachments"
-                )
-
-            return {"success": True, "uploaded_count": len(uploaded_files)}
-
+            return result
         except Exception as e:
-            log.error(f"Debugly Notion: Batch attachment upload failed: {e}")
+            log.error("Debugly Notion: attach_bundle failed: %s", e)
             import traceback
 
-            log.error(f"Debugly Notion: Upload traceback: {traceback.format_exc()}")
-            return {"error": f"Batch attachment upload failed: {e}"}
-
-    async def notion_finalize_attachments(self, payload: dict):
-        """Finalize attachments by updating the Notion page with already uploaded files.
-
-        Uses direct API calls to update page properties, bypassing NotionService database requirements.
-        """
-        log.debug(
-            f"Debugly Notion: Finalizing attachments for page {payload.get('page_id', 'unknown')[:8]}..."
-        )
-
-        try:
-            # Get settings and API token
-            settings = await self.get_studio_settings()
-            notion_settings = settings.endpoints.notion.notion
-
-            # Get token from server secrets
-            secret_name = notion_settings.api_key
-            log.debug(f"Debugly Notion: Looking for secret: '{secret_name}'")
-            token = await Secrets.get(secret_name)
-            if not token:
-                log.error(f"Debugly Notion: Secret '{secret_name}' not found or empty")
-                return {"error": "Notion API token not configured"}
-            log.debug(f"Debugly Notion: Secret retrieved, token length: {len(token)}")
-
-            page_id = payload.get("page_id")
-            if not page_id:
-                return {"error": "Page ID is required"}
-
-            # Get the uploaded files from the payload
-            uploaded_files = payload.get("files", [])
-            if not uploaded_files:
-                log.debug("Debugly Notion: No files to finalize")
-                return {"success": True, "finalized_count": 0}
-
-            # Update the page with all uploaded files at once using direct API call
-            log.debug(
-                f"Debugly Notion: Updating page with {len(uploaded_files)} attachments..."
-            )
-            await self._update_page_attachments_direct(token, page_id, uploaded_files)
-            log.debug("Debugly Notion: Successfully updated page with all attachments")
-
-            return {"success": True, "finalized_count": len(uploaded_files)}
-
-        except Exception as e:
-            log.error(f"Debugly Notion: Finalize attachments failed: {e}")
-            import traceback
-
-            log.error(f"Debugly Notion: Finalize traceback: {traceback.format_exc()}")
-            return {"error": f"Finalize attachments failed: {e}"}
-
-    async def _update_page_attachments_direct(
-        self, token: str, page_id: str, uploaded_files: list[dict]
-    ) -> None:
-        """
-        Update page attachments directly using Notion API without NotionService.
-
-        Based on: https://developers.notion.com/reference/patch-page
-        """
-        import requests
-
-        log.debug(
-            f"Updating page {page_id[:8]}... with {len(uploaded_files)} new attachments"
-        )
-
-        # Set up headers for Notion API
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Notion-Version": NOTION_API_VERSION,
-        }
-
-        try:
-            # First, get existing attachments from the page
-            existing_files = await self._get_existing_attachments_direct(token, page_id)
-            log.debug(f"Found {len(existing_files)} existing attachments")
-
-            # Combine existing files with new files
-            all_files = existing_files + uploaded_files
-            log.debug(f"Total files after adding new ones: {len(all_files)}")
-
-        except Exception as e:
-            log.warning(
-                f"Failed to get existing attachments, using only new files: {e}"
-            )
-            all_files = uploaded_files
-
-        # PATCH page: property value is { "files": [...] } (property-value-object).
-        payload = {
-            "properties": {
-                "Attachments": {"files": all_files},
-            }
-        }
-        log.debug(
-            "Debugly Notion: PATCH page attachments count=%s",
-            len(all_files),
-        )
-
-        try:
-            resp = requests.patch(
-                f"https://api.notion.com/v1/pages/{page_id}",
-                headers=headers,
-                json=payload,
-                timeout=(30, 600),
-            )
-            if resp.status_code >= 400:
-                log.error(
-                    "Debugly Notion: PATCH attachments failed: status=%s body=%s",
-                    resp.status_code,
-                    resp.text[:2000],
-                )
-            resp.raise_for_status()
-            log.debug(
-                f"Successfully updated page with {len(all_files)} total attachments"
-            )
-
-        except Exception as e:
-            log.error(f"Failed to update page attachments: {e}")
-            raise
-
-    async def _get_existing_attachments_direct(
-        self, token: str, page_id: str
-    ) -> list[dict]:
-        """Get existing attachments from a page using direct API call."""
-        import requests
-
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Notion-Version": NOTION_API_VERSION,
-        }
-
-        try:
-            response = requests.get(
-                f"https://api.notion.com/v1/pages/{page_id}/properties/Attachments",
-                headers=headers,
-                timeout=(30, 120),
-            )
-            if response.status_code == 200:
-                data = response.json()
-                files = data.get("files", [])
-                log.debug(f"Retrieved {len(files)} existing attachments")
-                return files
-            else:
-                log.warning(
-                    "Failed to get existing attachments: status=%s body=%s",
-                    response.status_code,
-                    response.text[:800],
-                )
-                return []
-        except Exception as e:
-            log.warning(f"Failed to get existing attachments: {e}")
-            return []
+            log.error("Traceback: %s", traceback.format_exc())
+            return {"success": False, "error": f"attach_bundle failed: {e}"}

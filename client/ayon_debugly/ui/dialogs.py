@@ -278,7 +278,20 @@ class SuccessDialog(QtWidgets.QDialog):
         self.setup_ui()
         
     def setup_ui(self):
-        self.setWindowTitle("Report Submitted Successfully")
+        has_endpoint_failure = any(
+            isinstance(res, dict) and res.get("failed")
+            for _, res in self.endpoint_results
+        )
+        has_attachment_warning = any(
+            isinstance(res, dict) and res.get("attachments_ok") is False
+            for _, res in self.endpoint_results
+        )
+        has_warning = has_endpoint_failure or has_attachment_warning
+        self.setWindowTitle(
+            "Report Submitted with Warnings"
+            if has_warning
+            else "Report Submitted Successfully"
+        )
         self.setMinimumWidth(500)
         self.setMinimumHeight(300)
         
@@ -288,12 +301,20 @@ class SuccessDialog(QtWidgets.QDialog):
         
         # Success icon and title
         title_layout = QtWidgets.QHBoxLayout()
-        icon_label = QtWidgets.QLabel("✅")
+        if has_warning:
+            icon_label = QtWidgets.QLabel("⚠️")
+            title_label = QtWidgets.QLabel("Report Submitted with Warnings")
+            title_label.setStyleSheet(
+                "font-size: 18px; font-weight: bold; color: #FF9800;"
+            )
+        else:
+            icon_label = QtWidgets.QLabel("✅")
+            title_label = QtWidgets.QLabel("Report Submitted Successfully")
+            title_label.setStyleSheet(
+                "font-size: 18px; font-weight: bold; color: #4CAF50;"
+            )
         icon_label.setStyleSheet("font-size: 24px;")
         title_layout.addWidget(icon_label)
-        
-        title_label = QtWidgets.QLabel("Report Submitted Successfully")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4CAF50;")
         title_layout.addWidget(title_label)
         title_layout.addStretch()
         
@@ -307,10 +328,13 @@ class SuccessDialog(QtWidgets.QDialog):
         
         # Endpoint results
         for endpoint, result in self.endpoint_results:
+            if isinstance(result, dict) and result.get("failed"):
+                self.add_failed_endpoint_result(layout, endpoint, result)
+                continue
             try:
                 success_info = endpoint.get_success_info(result)
                 self.add_endpoint_result(layout, success_info)
-            except Exception as e:
+            except Exception:
                 # Fallback for endpoints that don't implement get_success_info
                 self.add_fallback_result(layout, endpoint, result)
         
@@ -335,6 +359,8 @@ class SuccessDialog(QtWidgets.QDialog):
         # Message
         message_label = QtWidgets.QLabel(success_info["message"])
         message_label.setWordWrap(True)
+        if success_info.get("warning"):
+            message_label.setStyleSheet("color: #FF9800; font-weight: bold;")
         group_layout.addWidget(message_label)
         
         # URL or file path with action button
@@ -380,6 +406,19 @@ class SuccessDialog(QtWidgets.QDialog):
         
         layout.addWidget(group_box)
         
+    def add_failed_endpoint_result(self, layout, endpoint, result):
+        """Add a result section for an endpoint that raised during submit."""
+        name = endpoint.__class__.__name__.replace("Endpoint", "")
+        group_box = QtWidgets.QGroupBox(name)
+        group_layout = QtWidgets.QVBoxLayout(group_box)
+
+        message_label = QtWidgets.QLabel(result.get("error") or "Submission failed")
+        message_label.setWordWrap(True)
+        message_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+        group_layout.addWidget(message_label)
+
+        layout.addWidget(group_box)
+
     def add_fallback_result(self, layout, endpoint, result):
         """Add a fallback result section for endpoints without get_success_info"""
         group_box = QtWidgets.QGroupBox(endpoint.__class__.__name__.replace("Endpoint", ""))
