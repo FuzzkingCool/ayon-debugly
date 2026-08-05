@@ -244,7 +244,12 @@ class LogsSettings(BaseSettingsModel):
             ),
         ],
         title="Log Directories",
-        description="List of log directories to search, per platform.",
+        description=(
+            "List of log directories to search, per platform. "
+            "Collects top-level *.log files and the latest 10 *.log files "
+            "from each directory's sessions/ subfolder. "
+            "When AYON_LOCAL_SANDBOX is set, $AYON_LOCAL_SANDBOX/logs is also searched."
+        ),
     )
     log_files: List[LogFileEntry] = SettingsField(
         default_factory=lambda: [

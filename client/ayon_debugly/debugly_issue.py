@@ -5,6 +5,9 @@ import tempfile
 import json
 from datetime import datetime
 
+from ayon_debugly.collectors.collector_base import redact_log_content
+from ayon_debugly.lib import log_redacted_archive_name
+
 class DebuglyIssue:
     def __init__(
         self,
@@ -116,7 +119,6 @@ class DebuglyIssue:
                 z.write(self.screenshot, os.path.join("screenshot", os.path.basename(self.screenshot)))
             
             # Add redacted log files to logs subfolder
-            from ayon_debugly.collectors.collector_base import redact_log_content
             for log_file in self.log_files:
                 if log_file and os.path.exists(log_file):
                     try:
@@ -124,12 +126,13 @@ class DebuglyIssue:
                         with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read()
                         redacted_content = redact_log_content(content)
-                        
+
                         # Add redacted content to ZIP
-                        base_name = os.path.basename(log_file)
-                        name, ext = os.path.splitext(base_name)
-                        redacted_name = f"{name}_redacted{ext}"
-                        z.writestr(os.path.join("logs", redacted_name), redacted_content)
+                        redacted_name = log_redacted_archive_name(log_file)
+                        z.writestr(
+                            os.path.join("logs", redacted_name.replace("\\", "/")),
+                            redacted_content,
+                        )
                     except Exception:
                         # If redaction fails, skip this file for safety
                         continue

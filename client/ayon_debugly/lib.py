@@ -36,3 +36,19 @@ def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
     return path
+
+
+def log_display_name(log_path):
+    """Display name for a collected log file in the UI."""
+    norm = os.path.normpath(log_path)
+    parts = norm.split(os.sep)
+    if "sessions" in parts:
+        return os.path.join("sessions", os.path.basename(log_path))
+    return os.path.basename(log_path)
+
+
+def log_redacted_archive_name(log_path):
+    """Relative archive name for a redacted log under logs/ in issue zips."""
+    rel = log_display_name(log_path)
+    name, ext = os.path.splitext(rel)
+    return f"{name}_redacted{ext}"

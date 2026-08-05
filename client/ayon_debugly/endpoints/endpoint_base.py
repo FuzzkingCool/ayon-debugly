@@ -5,7 +5,9 @@ import os
 import shutil
 import tempfile
 from abc import ABC, abstractmethod
+from ayon_debugly.collectors.collector_base import redact_log_content
 from ayon_debugly.debugly_issue import DebuglyIssue
+from ayon_debugly.lib import log_redacted_archive_name
 from ayon_debugly.logger import log
  
 
@@ -69,15 +71,15 @@ class EndpointBase(ABC):
                     content = f.read()
                 
                 # Apply redaction
-                from ayon_debugly.collectors.collector_base import redact_log_content
                 redacted_content = redact_log_content(content)
-                
+
                 # Create a temporary redacted file
-                base_name = os.path.basename(log_file)
-                name, ext = os.path.splitext(base_name)
+                redacted_name = log_redacted_archive_name(log_file)
+                safe_name = redacted_name.replace(os.sep, "_").replace("/", "_")
+                name, ext = os.path.splitext(safe_name)
                 redacted_file = tempfile.NamedTemporaryFile(
-                    delete=False, 
-                    suffix=f"_redacted{ext}", 
+                    delete=False,
+                    suffix=f"_redacted{ext}",
                     prefix=f"debugly_{name}_",
                     mode='w',
                     encoding='utf-8'

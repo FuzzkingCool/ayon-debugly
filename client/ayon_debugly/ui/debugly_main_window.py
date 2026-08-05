@@ -9,6 +9,7 @@ from qtpy.QtGui import QFont
 
 from ayon_debugly.collectors import get_collector_pairs
 from ayon_debugly.debugly_app import DebuglyApp
+from ayon_debugly.lib import log_display_name
 from ayon_debugly.logger import log
 from ayon_debugly.notion_issue_fields import (
     ISSUE_TYPE_OPTIONS,
@@ -642,7 +643,7 @@ class DebuglyMainWindow(QtWidgets.QWidget):
             
             self.log_model = QtGui.QStandardItemModel(self.logListView)
             for log_file in log_files:
-                item = QtGui.QStandardItem(os.path.basename(log_file["path"]))
+                item = QtGui.QStandardItem(log_display_name(log_file["path"]))
                 # Make logs non-editable - remove checkable property
                 item.setData(log_file["path"], QtCore.Qt.UserRole)
                 # Add tooltip with file info
