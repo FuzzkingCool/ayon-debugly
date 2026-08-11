@@ -14,8 +14,8 @@ Optional:
   python scripts/test_notion_upload.py --small-only # skip ~21 MiB multi-part test
   python scripts/test_notion_upload.py --list-entries-only
       # offline check of list_zip_attach_entries member selection (no token/network)
-  python scripts/test_notion_upload.py --zip-bundle-pass
-      # server-side attach_zip_bytes_to_page with many small ZIP members + read-back
+  python scripts/test_notion_upload.py --probe-upload-hosts
+      # POST file_uploads only; log raw vs resolved send_host (run on AYON server)
 
 Reproduce production-like failing filenames (403 on …/file_uploads/…/send in client logs):
   python scripts/test_notion_upload.py --repro-failing-names
@@ -462,6 +462,102 @@ def _run_repro_failing_names(
     return 0
 
 
+def _run_probe_upload_hosts(log: logging.Logger, token: str) -> int:
+    """Create file_upload objects only; log upload_url / send_host resolution (no send)."""
+    import requests
+
+    from notion_service import (  # noqa: E402
+        NOTION_MULTIPART_CHUNK_BYTES,
+        NOTION_SINGLE_PART_MAX_BYTES,
+        _resolve_file_upload_complete_url,
+        _resolve_file_upload_send_url,
+        _url_host,
+    )
+
+    nv = "2026-03-11"
+    base = "https://api.notion.com/v1"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Notion-Version": nv,
+    }
+    log.info(
+        "Probe: run from AYON server host (same egress as notion/attach_bundle)"
+    )
+
+    def _log_response_meta(resp: requests.Response, label: str) -> None:
+        ray = resp.headers.get("cf-ray") or resp.headers.get("CF-Ray")
+        log.info("  %s HTTP %s cf-ray=%s", label, resp.status_code, ray or "?")
+
+    log.info("Probe: POST /file_uploads single_part create (no send)")
+    resp = requests.post(
+        f"{base}/file_uploads",
+        headers=headers,
+        json={
+            "mode": "single_part",
+            "filename": "probe_single.txt",
+            "content_type": "text/plain",
+        },
+        timeout=(30, 120),
+    )
+    _log_response_meta(resp, "single_part create")
+    if resp.status_code != 200:
+        log.error("  body: %s", (resp.text or "")[:1500])
+        return 3
+    info = resp.json()
+    fid = info["id"]
+    raw_upload = info.get("upload_url")
+    send_url, use_auth = _resolve_file_upload_send_url(base, fid, raw_upload)
+    log.info(
+        "  single_part raw_upload_host=%s send_host=%s auth=%s",
+        _url_host(raw_upload or ""),
+        _url_host(send_url),
+        use_auth,
+    )
+
+    mp_size = NOTION_SINGLE_PART_MAX_BYTES + 1
+    chunk = NOTION_MULTIPART_CHUNK_BYTES
+    number_of_parts = (mp_size + chunk - 1) // chunk
+    log.info(
+        "Probe: POST /file_uploads multi_part create parts=%s (no send)",
+        number_of_parts,
+    )
+    resp2 = requests.post(
+        f"{base}/file_uploads",
+        headers=headers,
+        json={
+            "mode": "multi_part",
+            "number_of_parts": number_of_parts,
+            "filename": "probe_multipart.txt",
+            "content_type": "text/plain",
+        },
+        timeout=(30, 120),
+    )
+    _log_response_meta(resp2, "multi_part create")
+    if resp2.status_code != 200:
+        log.error("  body: %s", (resp2.text or "")[:1500])
+        return 4
+    info2 = resp2.json()
+    fid2 = info2["id"]
+    raw_upload2 = info2.get("upload_url")
+    raw_complete = info2.get("complete_url")
+    send_url2, use_auth2 = _resolve_file_upload_send_url(base, fid2, raw_upload2)
+    complete_url2 = _resolve_file_upload_complete_url(base, fid2, raw_complete)
+    log.info(
+        "  multi_part raw_upload_host=%s send_host=%s auth=%s",
+        _url_host(raw_upload2 or ""),
+        _url_host(send_url2),
+        use_auth2,
+    )
+    log.info(
+        "  multi_part raw_complete_host=%s complete_host=%s",
+        _url_host(raw_complete or ""),
+        _url_host(complete_url2),
+    )
+    log.info("Probe done (create only; no bytes sent)")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Test Notion single/multi-part uploads via .env")
     parser.add_argument(
@@ -496,6 +592,12 @@ def main() -> int:
         action="store_true",
         help="Create a multi-member report ZIP and run attach_zip_bytes_to_page; "
         "verify read-back Attachments count",
+    )
+    parser.add_argument(
+        "--probe-upload-hosts",
+        action="store_true",
+        help="POST file_uploads (single + multi_part) only; log upload_url/send_host "
+        "resolution and cf-ray — run on AYON server egress",
     )
     args = parser.parse_args()
 
@@ -534,6 +636,9 @@ def main() -> int:
         return 2
 
     _check_workspace_limits(log, token)
+
+    if args.probe_upload_hosts:
+        return _run_probe_upload_hosts(log, token)
 
     if args.repro_failing_names:
         return _run_repro_failing_names(

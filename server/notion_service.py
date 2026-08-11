@@ -172,24 +172,160 @@ def _notion_send_headers(token: str, notion_version: str) -> dict[str, str]:
     }
 
 
+def _url_host(url: str) -> str:
+    if not url or "/" not in url:
+        return "?"
+    return url.split("/")[2].lower()
+
+
+def _is_presigned_storage_host(host: str) -> bool:
+    h = host.lower()
+    return h.endswith("amazonaws.com") or ".s3." in h
+
+
+def _is_notion_files_host(host: str) -> bool:
+    """Notion multi-part create may return files.notion.com upload URLs."""
+    h = host.lower()
+    return h == "files.notion.com" or h.endswith(".files.notion.com")
+
+
+def _log_file_upload_url_resolution(
+    *,
+    context: str,
+    file_upload_id: str,
+    raw_upload_url: Optional[str],
+    send_url: str,
+    use_notion_auth: bool,
+) -> None:
+    raw_host = _url_host(raw_upload_url or "")
+    resolved_host = _url_host(send_url)
+    if raw_host != resolved_host:
+        log.info(
+            "Notion %s: upload_id=%s... raw_upload_host=%s send_host=%s auth=%s",
+            context,
+            file_upload_id[:8],
+            raw_host,
+            resolved_host,
+            use_notion_auth,
+        )
+    else:
+        log.debug(
+            "Notion %s: upload_id=%s... send_host=%s auth=%s",
+            context,
+            file_upload_id[:8],
+            resolved_host,
+            use_notion_auth,
+        )
+
+
+def _resolve_file_upload_send_url(
+    base_url: str,
+    file_upload_id: str,
+    upload_url: Optional[str],
+) -> tuple[str, bool]:
+    """Return (send_url, use_notion_auth_headers)."""
+    canonical = f"{base_url.rstrip('/')}/file_uploads/{file_upload_id}/send"
+    if not upload_url:
+        return canonical, True
+    host = _url_host(upload_url)
+    if host == "api.notion.com":
+        return upload_url, True
+    if _is_notion_files_host(host):
+        log.debug(
+            "Notion file send: using files.notion.com upload_url as returned",
+        )
+        return upload_url, True
+    if _is_presigned_storage_host(host):
+        return upload_url, False
+    if host in ("notion.com", "www.notion.com"):
+        log.debug(
+            "Notion file send: replacing upload_url host %s with api.notion.com",
+            host,
+        )
+        return canonical, True
+    return upload_url, True
+
+
+def _resolve_file_upload_complete_url(
+    base_url: str,
+    file_upload_id: str,
+    complete_url: Optional[str],
+) -> str:
+    canonical = f"{base_url.rstrip('/')}/file_uploads/{file_upload_id}/complete"
+    if not complete_url:
+        return canonical
+    host = _url_host(complete_url)
+    if host in ("notion.com", "www.notion.com"):
+        log.debug(
+            "Notion file complete: replacing complete_url host %s with api.notion.com",
+            host,
+        )
+        return canonical
+    return complete_url
+
+
+def _notion_send_request_headers(
+    token: str,
+    notion_version: str,
+    *,
+    use_notion_auth: bool,
+) -> dict[str, str]:
+    if not use_notion_auth:
+        return {}
+    return _notion_send_headers(token, notion_version)
+
+
+def _is_cloudflare_block_response(response: "requests.Response") -> bool:
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    body = (response.text or "").lower()
+    if "text/html" in content_type and (
+        "cloudflare" in body or "cf-wrapper" in body
+    ):
+        return True
+    return "cf-wrapper" in body or "attention required!" in body
+
+
+def _cf_ray_from_response(response: "requests.Response") -> Optional[str]:
+    return response.headers.get("cf-ray") or response.headers.get("CF-Ray")
+
+
 def _log_notion_http_error(operation: str, response: "requests.Response") -> None:
+    ray = _cf_ray_from_response(response)
     log.error(
-        "Notion %s failed: status=%s body=%s",
+        "Notion %s failed: status=%s cf-ray=%s body=%s",
         operation,
         response.status_code,
+        ray or "?",
         response.text,
     )
 
 
-def _notion_raise_for_status(operation: str, response: "requests.Response") -> None:
+def _notion_raise_for_status(
+    operation: str,
+    response: "requests.Response",
+    *,
+    send_host: Optional[str] = None,
+) -> None:
     """Raise RuntimeError with full Notion response body (403/400 diagnostics)."""
     if response.status_code < 400:
         return
     _log_notion_http_error(operation, response)
+    if _is_cloudflare_block_response(response):
+        ray = _cf_ray_from_response(response) or "unknown"
+        host_note = f" send_host={send_host}" if send_host else ""
+        raise RuntimeError(
+            f"{operation}: Cloudflare blocked file upload (HTTP "
+            f"{response.status_code}, ray={ray}{host_note}). Not a Notion "
+            "permission error — often triggered by log content, multipart POST, "
+            "or server egress IP. Full ZIP may be in Debugly Shared Folder."
+        )
     body = (response.text or "").strip()
     if len(body) > 2500:
         body = body[:2500] + "…"
-    raise RuntimeError(f"{operation}: HTTP {response.status_code} {body}")
+    host_suffix = f" send_host={send_host}" if send_host else ""
+    raise RuntimeError(
+        f"{operation}: HTTP {response.status_code}{host_suffix} {body}"
+    )
 
 
 def upload_file_bytes_to_notion(
@@ -237,6 +373,8 @@ def upload_file_bytes_to_notion(
 def _is_expired_file_upload_403(response: "requests.Response") -> bool:
     if response.status_code != 403:
         return False
+    if _is_cloudflare_block_response(response):
+        return False
     body = (response.text or "").lower()
     return "expir" in body or "not found" in body
 
@@ -253,12 +391,13 @@ def _upload_file_bytes_single_part(
 ) -> str:
     file_size = len(file_bytes)
     create_payload = {
+        "mode": "single_part",
         "filename": file_name,
         "content_type": content_type,
     }
     timeout = (30, upload_timeout)
 
-    def _create_upload() -> tuple[str, str]:
+    def _create_upload() -> tuple[str, str, bool]:
         resp = _notion_request(
             "POST",
             f"{base_url}/file_uploads",
@@ -270,28 +409,40 @@ def _upload_file_bytes_single_part(
         _notion_raise_for_status("POST /file_uploads (single_part) create", resp)
         info = resp.json()
         file_upload_id = info["id"]
-        upload_url = info.get("upload_url") or (
-            f"{base_url}/file_uploads/{file_upload_id}/send"
+        raw_upload_url = info.get("upload_url")
+        send_url, use_notion_auth = _resolve_file_upload_send_url(
+            base_url,
+            file_upload_id,
+            raw_upload_url,
         )
-        log.debug(
-            "Notion single_part: created upload %s... url_host=%s",
-            file_upload_id[:8],
-            upload_url.split("/")[2] if upload_url and "/" in upload_url else "?",
+        _log_file_upload_url_resolution(
+            context="single_part create",
+            file_upload_id=file_upload_id,
+            raw_upload_url=raw_upload_url,
+            send_url=send_url,
+            use_notion_auth=use_notion_auth,
         )
-        return file_upload_id, upload_url
+        return file_upload_id, send_url, use_notion_auth
 
     try:
-        file_upload_id, upload_url = _create_upload()
+        file_upload_id, send_url, use_notion_auth = _create_upload()
+        send_host = _url_host(send_url)
         log.debug(
-            "Notion single_part: sending %s bytes timeout=%ss",
+            "Notion single_part: sending %s bytes timeout=%ss send_host=%s",
             file_size,
             upload_timeout,
+            send_host,
         )
         files = {"file": (file_name, file_bytes, content_type)}
+        send_headers = _notion_send_request_headers(
+            token,
+            notion_version,
+            use_notion_auth=use_notion_auth,
+        )
         resp2 = _notion_request(
             "POST",
-            upload_url,
-            headers=_notion_send_headers(token, notion_version),
+            send_url,
+            headers=send_headers,
             files=files,
             timeout=timeout,
             operation="file send (single_part)",
@@ -301,16 +452,26 @@ def _upload_file_bytes_single_part(
                 "Notion single_part: expired upload for %s; re-creating file_upload",
                 file_name,
             )
-            file_upload_id, upload_url = _create_upload()
+            file_upload_id, send_url, use_notion_auth = _create_upload()
+            send_host = _url_host(send_url)
+            send_headers = _notion_send_request_headers(
+                token,
+                notion_version,
+                use_notion_auth=use_notion_auth,
+            )
             resp2 = _notion_request(
                 "POST",
-                upload_url,
-                headers=_notion_send_headers(token, notion_version),
+                send_url,
+                headers=send_headers,
                 files=files,
                 timeout=timeout,
                 operation="file send (single_part) after re-create",
             )
-        _notion_raise_for_status("file send (single_part)", resp2)
+        _notion_raise_for_status(
+            "file send (single_part)",
+            resp2,
+            send_host=send_host,
+        )
         sent = resp2.json() if resp2.content else {}
         st = sent.get("status")
         if st and st != "uploaded":
@@ -368,21 +529,46 @@ def _upload_file_bytes_multipart(
         _notion_raise_for_status("POST /file_uploads (multi_part) create", resp)
         info = resp.json()
         file_upload_id = info["id"]
-        upload_url = info.get("upload_url") or (
-            f"{base_url}/file_uploads/{file_upload_id}/send"
+        raw_upload_url = info.get("upload_url")
+        raw_complete_url = info.get("complete_url")
+        send_url, use_notion_auth = _resolve_file_upload_send_url(
+            base_url,
+            file_upload_id,
+            raw_upload_url,
         )
-        complete_url = info.get("complete_url") or (
-            f"{base_url}/file_uploads/{file_upload_id}/complete"
+        complete_url = _resolve_file_upload_complete_url(
+            base_url,
+            file_upload_id,
+            raw_complete_url,
         )
-        log.debug(
-            "Notion multi_part: created upload %s... parts=%s upload_host=%s",
-            file_upload_id[:8],
-            number_of_parts,
-            upload_url.split("/")[2] if upload_url and "/" in upload_url else "?",
+        send_host = _url_host(send_url)
+        _log_file_upload_url_resolution(
+            context=f"multi_part create parts={number_of_parts}",
+            file_upload_id=file_upload_id,
+            raw_upload_url=raw_upload_url,
+            send_url=send_url,
+            use_notion_auth=use_notion_auth,
         )
+        if raw_complete_url:
+            raw_complete_host = _url_host(raw_complete_url)
+            resolved_complete_host = _url_host(complete_url)
+            if raw_complete_host != resolved_complete_host:
+                log.info(
+                    "Notion multi_part: upload_id=%s... raw_complete_host=%s "
+                    "complete_host=%s",
+                    file_upload_id[:8],
+                    raw_complete_host,
+                    resolved_complete_host,
+                )
     except Exception as e:
         log.error("Notion multi_part: create failed for %s: %s", file_name, e)
         raise
+
+    send_headers = _notion_send_request_headers(
+        token,
+        notion_version,
+        use_notion_auth=use_notion_auth,
+    )
 
     try:
         for part_index in range(number_of_parts):
@@ -391,15 +577,16 @@ def _upload_file_bytes_multipart(
             part_bytes = file_bytes[start:end]
             part_no = part_index + 1
             log.debug(
-                "Notion multi_part: sending part %s/%s (%s bytes)",
+                "Notion multi_part: sending part %s/%s (%s bytes) send_host=%s",
                 part_no,
                 number_of_parts,
                 len(part_bytes),
+                send_host,
             )
             resp2 = _notion_request(
                 "POST",
-                upload_url,
-                headers=_notion_send_headers(token, notion_version),
+                send_url,
+                headers=send_headers,
                 files={"file": (file_name, part_bytes, content_type)},
                 data={"part_number": str(part_no)},
                 timeout=timeout,
@@ -408,6 +595,7 @@ def _upload_file_bytes_multipart(
             _notion_raise_for_status(
                 f"file send part {part_no}/{number_of_parts} (multi_part)",
                 resp2,
+                send_host=send_host,
             )
 
         log.debug("Notion multi_part: completing upload %s...", file_upload_id[:8])
@@ -572,6 +760,22 @@ class NotionService:
                 )
         except Exception as e:
             log.warning("Notion GET /workspace failed (non-fatal): %s", e)
+
+    def _workspace_upload_limit_skip_message(self, file_size: int) -> Optional[str]:
+        """Human-readable skip reason when file_size exceeds workspace upload cap."""
+        max_bytes = self.max_file_upload_bytes
+        if max_bytes is None or file_size <= max_bytes:
+            return None
+        mib = max_bytes / (1024 * 1024)
+        size_mib = file_size / (1024 * 1024)
+        if max_bytes <= 5 * 1024 * 1024:
+            tier = "free workspace limit is 5 MiB per file"
+        else:
+            tier = "see Notion workspace plan (GET /workspace)"
+        return (
+            f"skipped ({size_mib:.1f} MiB exceeds Notion workspace limit "
+            f"{mib:.1f} MiB; {tier})"
+        )
 
     def test_connection(self) -> dict[str, Any]:
         """Test the Notion API connection and database access."""
@@ -2197,6 +2401,12 @@ class NotionService:
                             failure_lines.append(
                                 f"{display_name}: skipped (exceeds 100MB server limit)"
                             )
+                            continue
+                        limit_skip = self._workspace_upload_limit_skip_message(
+                            file_size
+                        )
+                        if limit_skip:
+                            failure_lines.append(f"{display_name}: {limit_skip}")
                             continue
                         file_bytes = zf.read(zip_path)
                         content_type = _guess_attachment_content_type(display_name)

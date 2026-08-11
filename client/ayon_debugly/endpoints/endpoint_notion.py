@@ -29,6 +29,62 @@ def _attachment_display_name_from_zip_base(base_name: str) -> str:
     return base_name
 
 
+def _notion_url_host(url: str) -> str:
+    if not url or "/" not in url:
+        return "?"
+    return url.split("/")[2].lower()
+
+
+def _resolve_notion_file_send_url(
+    base_url: str,
+    file_upload_id: str,
+    upload_url: Optional[str],
+) -> tuple[str, bool]:
+    canonical = f"{base_url.rstrip('/')}/file_uploads/{file_upload_id}/send"
+    if not upload_url:
+        return canonical, True
+    host = _notion_url_host(upload_url)
+    if host == "api.notion.com":
+        return upload_url, True
+    if host.endswith("amazonaws.com") or ".s3." in host:
+        return upload_url, False
+    if host in ("notion.com", "www.notion.com"):
+        return canonical, True
+    return upload_url, True
+
+
+def _is_cloudflare_block_response(response: requests.Response) -> bool:
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    body = (response.text or "").lower()
+    if "text/html" in content_type and (
+        "cloudflare" in body or "cf-wrapper" in body
+    ):
+        return True
+    return "cf-wrapper" in body or "attention required!" in body
+
+
+def _notion_upload_error_message(
+    operation: str,
+    response: requests.Response,
+    *,
+    send_host: Optional[str] = None,
+) -> str:
+    if _is_cloudflare_block_response(response):
+        ray = response.headers.get("cf-ray") or response.headers.get("CF-Ray") or "unknown"
+        host_note = f" send_host={send_host}" if send_host else ""
+        return (
+            f"{operation}: Cloudflare blocked file upload (HTTP "
+            f"{response.status_code}, ray={ray}{host_note}). Not a Notion "
+            "permission error — often triggered by log content, multipart POST, "
+            "or server egress IP. Full ZIP may be in Debugly Shared Folder."
+        )
+    body = (response.text or "").strip()
+    if len(body) > 500:
+        body = body[:500] + "…"
+    host_suffix = f" send_host={send_host}" if send_host else ""
+    return f"{operation}: HTTP {response.status_code}{host_suffix} {body}"
+
+
 class EndpointNotion(EndpointBase):
     def __init__(self):
         self.notion_token = None
@@ -1691,7 +1747,11 @@ class EndpointNotion(EndpointBase):
             "Notion-Version": self.notion_version,
         }
 
-        create_data = {"filename": file_name, "content_type": content_type}
+        create_data = {
+            "mode": "single_part",
+            "filename": file_name,
+            "content_type": content_type,
+        }
 
         response = requests.post(
             f"{self.base_url}/file_uploads", headers=headers, json=create_data
@@ -1707,32 +1767,43 @@ class EndpointNotion(EndpointBase):
 
         upload_info = response.json()
         file_upload_id = upload_info["id"]
-        upload_url = upload_info["upload_url"]
+        send_url, use_notion_auth = _resolve_notion_file_send_url(
+            self.base_url,
+            file_upload_id,
+            upload_info.get("upload_url"),
+        )
+        send_host = _notion_url_host(send_url)
 
         log.debug(
-            f"Notion endpoint: Created file upload {file_upload_id} for {file_name}"
+            f"Notion endpoint: Created file upload {file_upload_id} for {file_name} "
+            f"(send_host={send_host})"
         )
 
         # Step 2: Upload file contents
+        send_headers: dict[str, str] = {}
+        if use_notion_auth:
+            send_headers = {
+                "Authorization": f"Bearer {self.notion_token}",
+                "Notion-Version": self.notion_version,
+            }
+
         with open(file_path, "rb") as f:
             files = {"file": (file_name, f, content_type)}
 
             file_response = requests.post(
-                upload_url,
-                headers={
-                    "Authorization": f"Bearer {self.notion_token}",
-                    "Notion-Version": self.notion_version,
-                },
+                send_url,
+                headers=send_headers,
                 files=files,
             )
 
         if file_response.status_code != 200:
-            log.error(
-                f"Notion endpoint: Failed to upload file content - {file_response.status_code}: {file_response.text}"
+            msg = _notion_upload_error_message(
+                "file send (single_part)",
+                file_response,
+                send_host=send_host,
             )
-            raise Exception(
-                f"Failed to upload file content: {file_response.status_code}"
-            )
+            log.error(f"Notion endpoint: Failed to upload file content - {msg}")
+            raise Exception(msg)
 
         log.debug(
             f"Notion endpoint: Successfully uploaded file content for {file_name}"

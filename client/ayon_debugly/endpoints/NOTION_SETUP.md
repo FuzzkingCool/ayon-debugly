@@ -190,6 +190,36 @@ When an issue is submitted through Debugly, the Notion integration will:
    - Check that the user has been invited to the workspace
    - The integration will log warnings if users are not found
 
+8. **Attachments fail with Cloudflare HTML (HTTP 403, "Attention Required!")**
+
+   This is **not** the same as a Notion JSON `403` (permissions / workspace limits).
+
+   - **Symptom:** The Notion issue **page is created**, but attachment upload fails. The error body is HTML mentioning Cloudflare and "unable to access notion.com", not a JSON `code` like `restricted_resource`.
+   - **Cause:** The File Upload **send** step (`POST …/file_uploads/…/send`, multipart) was blocked at the network edge — often log content in debug `.txt` files, multipart POST shape, or the **AYON server egress IP** (uploads run server-side via `notion/attach_bundle`, not on the artist workstation).
+   - **Fallback:** If Debugly Shared Folder is configured, the full report ZIP is still saved there; the Notion page note mentions this.
+   - **Diagnose from the AYON server host** (same network as outbound Notion calls):
+
+     ```powershell
+     cd path\to\ayon-debugly
+     # .env with NOTION_API_KEY and NOTION_DB_ID
+     python scripts/test_notion_upload.py --small-only
+     python scripts/test_notion_upload.py --repro-failing-names
+     python scripts/test_notion_upload.py --probe-upload-hosts
+     ```
+
+     - `--probe-upload-hosts` logs `raw_upload_host`, `send_host`, and `cf-ray` without sending file bytes (safe first check on server).
+     - Small upload OK, repro names fail → content/WAF sensitivity (not API version).
+     - Everything fails from server, OK from dev PC → server IP or outbound path; adjust egress or contact Notion with `cf-ray` from server logs.
+   - **Server logs:** Look for `url_host=` / `send_host=` on Notion upload lines; Cloudflare blocks include `cf-ray` in the error summary.
+
+9. **Free workspace 5 MiB attachment limit**
+
+   Notion free workspaces cap uploads at 5 MiB per file. Larger attachments return Notion JSON errors (not Cloudflare HTML). The test script logs workspace limits via `GET /workspace`:
+
+   ```powershell
+   python scripts/test_notion_upload.py --small-only
+   ```
+
 ### Getting Help
 
 If you encounter issues:
