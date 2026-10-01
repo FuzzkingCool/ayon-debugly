@@ -4,6 +4,7 @@ import traceback
 
 from ayon_core.addon import AYONAddon, ITrayAddon
 from ayon_core.lib import run_detached_ayon_launcher_process
+from ayon_core.tools.tray.ui.tray_menu_icons import apply_tray_menu_icon
 from qtpy import QtGui, QtWidgets
 
 from ayon_debugly.desktop_shortcut import create_staging_desktop_shortcut
@@ -117,6 +118,9 @@ class DebuglyAddon(AYONAddon, ITrayAddon):
         menu.setProperty("parentTrayMenu", tray_menu)
         tray_menu.addMenu(menu)
         self._menu = menu
+        debug_icon_path = os.path.join(ADDON_ROOT, "resources", "debug.png")
+        if os.path.exists(debug_icon_path):
+            apply_tray_menu_icon(menu.menuAction(), QtGui.QIcon(debug_icon_path))
         self._menu_builder.update_menu_contents(menu)
         # Connect aboutToShow for dynamic updates
         menu.aboutToShow.connect(lambda: self._menu_builder.update_menu_contents(menu))
