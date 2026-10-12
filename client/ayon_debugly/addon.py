@@ -4,7 +4,7 @@ import traceback
 
 from ayon_core.addon import AYONAddon, ITrayAddon
 from ayon_core.lib import run_detached_ayon_launcher_process
-from ayon_core.tools.tray.ui.tray_menu_icons import apply_tray_menu_icon
+from ayon_core.tools.tray.menu_icons import apply_tray_menu_icon
 from qtpy import QtGui, QtWidgets
 
 from ayon_debugly.desktop_shortcut import create_staging_desktop_shortcut
